@@ -736,49 +736,59 @@ class MultiEditMutator(BaseMutator):
         if not isinstance(edits, list) or not edits:
             raise ValueError(f"Expected a non-empty JSON array, got: {raw[:100]}")
 
-        # Apply edits sequentially
+        # Apply edits one at a time, validating after each
+        from ludax_grammar import validate_game
         result = game_str
-        for edit in edits:
+        applied_edits = 0
+
+        for edit_idx, edit in enumerate(edits):
             find = edit.get("find", "")
             replace = edit.get("replace", "")
-            if find and find in result:
-                result = result.replace(find, replace, 1)
+            if not find or find not in result:
+                continue
 
-        result = result.replace("\n", " ").strip()
+            candidate = result.replace(find, replace, 1).replace("\n", " ").strip()
+            is_valid, err = validate_game(candidate)
 
-        # Grammar validation + repair
-        from ludax_grammar import validate_game
+            if is_valid:
+                result = candidate
+                applied_edits += 1
+            else:
+                # This specific edit broke grammar — ask LLM to fix just this replacement
+                for attempt in range(self.max_repair_attempts):
+                    repair_messages = [{"role": "user", "content": (
+                        f"This find-and-replace edit produces a grammar error in a Ludax game:\n\n"
+                        f"Find: {find}\nReplace: {replace}\n\n"
+                        f"Error after applying: {err}\n\n"
+                        f"Fix the replacement string. Output ONLY the corrected replacement (not the find, not the full game)."
+                    )}]
+                    repair_resp = await self.async_client.messages.create(
+                        model=self.model_name, max_tokens=512, temperature=0.3,
+                        system=MULTI_EDIT_SYSTEM, messages=repair_messages,
+                    )
+                    fixed_replace = repair_resp.content[0].text.strip()
+                    if fixed_replace.startswith("```"):
+                        fixed_replace = fixed_replace.split("\n", 1)[1] if "\n" in fixed_replace else fixed_replace[3:]
+                        if fixed_replace.endswith("```"): fixed_replace = fixed_replace[:-3]
+                        fixed_replace = fixed_replace.strip()
+                    fixed_replace = fixed_replace.replace("\n", " ")
+
+                    candidate = result.replace(find, fixed_replace, 1).replace("\n", " ").strip()
+                    is_valid, err = validate_game(candidate)
+                    if is_valid:
+                        result = candidate
+                        applied_edits += 1
+                        break
+                # If repair failed for this edit, skip it and continue with the next
+
+        result = result.strip()
+
+        if applied_edits == 0:
+            raise ValueError("No edits were applied (find strings didn't match or all repairs failed)")
+
         is_valid, err = validate_game(result)
-
         if not is_valid:
-            # Ask LLM to fix the assembled result — use a direct repair prompt, not JSON
-            repair_system = (
-                "You are a Ludax syntax expert. Fix the grammar error in the provided game. "
-                "Output ONLY the complete corrected Ludax game. No JSON, no explanation."
-            )
-            for attempt in range(self.max_repair_attempts):
-                repair_messages = [{"role": "user", "content": (
-                    f"This Ludax game has a grammar error:\n\n{result}\n\n"
-                    f"Error: {err[:300]}\n\n"
-                    f"Fix only the syntax error. Output the complete corrected game."
-                )}]
-                repair_resp = await self.async_client.messages.create(
-                    model=self.model_name, max_tokens=1024, temperature=0.3,
-                    system=repair_system, messages=repair_messages,
-                )
-                fixed = repair_resp.content[0].text.strip()
-                if fixed.startswith("```"):
-                    fixed = fixed.split("\n", 1)[1] if "\n" in fixed else fixed[3:]
-                    if fixed.endswith("```"): fixed = fixed[:-3]
-                    fixed = fixed.strip()
-                result = fixed.replace("\n", " ").strip()
-
-                is_valid, err = validate_game(result)
-                if is_valid:
-                    break
-
-        if not is_valid:
-            raise ValueError(f"Grammar repair failed: {err[:100]}")
+            raise ValueError(f"Final grammar check failed: {err[:100]}")
 
         return result
 
