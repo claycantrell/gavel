@@ -1,8 +1,8 @@
+import concurrent.futures
 import typing
 
 import numpy as np
 import scipy.stats as stats
-import timeout_decorator
 
 from config import (COMPLETION_THRESHOLD, MEAN_TURNS_THRESHOLD, DECISION_MOVES_THRESHOLD,
                     BOARD_COVERAGE_THRESHOLD, MIN_SCORE, UNCOMPILABLE_FITNESS, UNPLAYABLE_FITNESS,
@@ -57,29 +57,28 @@ def _get_fast_evaluation(game_str: str,
     if evaluation_cache is not None and game_str in evaluation_cache:
         return evaluation_cache[game_str]
 
-    if timeout_duration != -1:
-        @timeout_decorator.timeout(timeout_duration)
-        def _eval_wrapper(game_str, ai_name, num_games, thinking_time, max_turns):
-            return STANDARD_EVALUATOR.two_step_evaluate(game_str, ai_name, num_games, thinking_time, max_turns)
-        
-    else:
-        def _eval_wrapper(game_str, ai_name, num_games, thinking_time, max_turns):
-            return STANDARD_EVALUATOR.two_step_evaluate(game_str, ai_name, num_games, thinking_time, max_turns)
-
-    # If either evaluator crashes for any reason, then we eject the game and re-initialize the evaluators
-    try:
-        evaluation = _eval_wrapper(game_str, ai_name, num_games, thinking_time, max_turns)
+    def _run_evaluation():
+        evaluation = STANDARD_EVALUATOR.two_step_evaluate(game_str, ai_name, num_games, thinking_time, max_turns)
         if evaluation['compilable'] and evaluation['playable'] and 'trace_score' in FITNESS_METRIC_KEYS:
             trace_score = FAST_TRACE_EVALUATOR.evaluate(game_str, thinking_time=thinking_time, max_turns=max_turns, max_time=120, trials_per_player=5)
         else:
             trace_score = -1
-
         evaluation.update({"trace_score": trace_score})
+        return evaluation
 
-    except Exception as e:
+    # If either evaluator crashes or times out, eject the game and re-initialize the evaluators
+    try:
+        if timeout_duration != -1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_evaluation)
+                evaluation = future.result(timeout=timeout_duration)
+        else:
+            evaluation = _run_evaluation()
+
+    except (concurrent.futures.TimeoutError, Exception) as e:
         evaluation = {"compilable": False, "playable": False, "trace_score": -1, "balance": -1, "completion": -1, "drawishness": -1,
                       "mean_turns": -1, "decision_moves": -1, "board_coverage_default": -1, "trace_score": -1, "wins": [], "error": str(e)}
-        
+
         _close_fast_evaluation(game_str)
 
     evaluation["game_str"] = game_str

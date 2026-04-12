@@ -107,6 +107,13 @@ class JavaInterface():
             self.java_process.terminate()
             # self.java_process.wait(timeout=0.2)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._terminate()
+        return False
+
     def __del__(self):
         self._terminate()
 
