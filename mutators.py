@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import asyncio
 from collections import defaultdict
 import os
 import random
@@ -123,18 +124,18 @@ class BaseMutator(ABC):
 
 
 class AnthropicMutator(BaseMutator):
-    """Mutator that calls the Anthropic Messages API."""
+    """Mutator that calls the Anthropic Messages API with concurrent requests."""
 
     def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3, temperature: float = 1.0):
         super().__init__(num_return_sequences)
-        self.client = anthropic.Anthropic()
+        self.async_client = anthropic.AsyncAnthropic()
         self.model_name = model_name
         self.temperature = temperature
 
-    def _call_api(self, prefix: str, suffix: str) -> str:
+    async def _call_api_async(self, prefix: str, suffix: str) -> str:
         user_prompt = f"Here is a Ludii game with a section removed. Generate a replacement for <BLANK>.\n\n{prefix}<BLANK>{suffix}"
 
-        response = self.client.messages.create(
+        response = await self.async_client.messages.create(
             model=self.model_name,
             max_tokens=512,
             temperature=self.temperature,
@@ -151,16 +152,31 @@ class AnthropicMutator(BaseMutator):
         output = output.replace("\n", " ")
         return output
 
-    def _generate_mutations(self, prefix: str, suffix: str) -> typing.List[str]:
+    async def _generate_mutations_async(self, prefix: str, suffix: str) -> typing.List[str]:
+        tasks = [self._call_api_async(prefix, suffix) for _ in range(self.num_return_sequences)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
         new_games = []
-        for _ in range(self.num_return_sequences):
-            try:
-                output = self._call_api(prefix, suffix)
-                new_games.append(f"{prefix}{output}{suffix}".strip())
-            except Exception as e:
-                print(f"Anthropic API error: {e}")
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"Anthropic API error: {result}")
                 continue
+            new_games.append(f"{prefix}{result}{suffix}".strip())
         return new_games
+
+    def _generate_mutations(self, prefix: str, suffix: str) -> typing.List[str]:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # Already inside an event loop (e.g. Jupyter) — run in a new thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(asyncio.run, self._generate_mutations_async(prefix, suffix)).result()
+        else:
+            return asyncio.run(self._generate_mutations_async(prefix, suffix))
 
 
 class LLMMutator(BaseMutator):
