@@ -141,6 +141,37 @@ Ludax syntax reference:
 Parentheses must balance. All games must be deterministic (no dice/randomness)."""
 
 
+
+# Semantic weight categories for mutation targeting
+# High-weight = gameplay-changing, low-weight = structural/trivial
+_LUDEME_WEIGHTS = {
+    # End conditions — highest impact (change win/loss conditions)
+    "end": 10, "if": 8, "line": 8, "connected": 8, "exists": 8,
+    "no_legal_actions": 6, "full_board": 6, "by_score": 6, "captured_all": 6,
+    ">=": 7, "<=": 7, "=": 7,
+    # Win/loss outcomes
+    "mover": 5, "opponent": 5, "draw": 5,
+    # Movement rules — high impact
+    "move": 9, "hop": 9, "step": 9, "slide": 9, "place": 7,
+    "or": 7, "and": 6, "not": 6,
+    # Effects — change what happens after a move
+    "effects": 9, "capture": 8, "promote": 8, "flip": 8,
+    "extra_turn": 7, "set_score": 6, "increment_score": 6,
+    # Constraints on placement/movement
+    "destination": 7, "result": 7,
+    # Play structure
+    "play": 6, "repeat": 4, "once_through": 4, "force_pass": 5,
+    # Board (interesting but risky — can break start positions)
+    "board": 3, "square": 3, "hexagon": 3, "hex_rectangle": 3, "rectangle": 3,
+    # Masks (useful subexpressions)
+    "empty": 2, "occupied": 3, "edge": 3, "row": 2, "column": 2,
+    "corners": 3, "center": 3, "adjacent": 4, "custodial": 5,
+}
+# Everything not listed gets weight 0 (skipped)
+_SKIP_LUDEMES = {"players", "equipment", "pieces", "rules", "start", "rendering",
+                 "color", "set_forward", "game"}
+
+
 class BaseMutator(ABC):
     """Shared mutation logic: location selection, UCB tracking, and the mutate interface."""
 
@@ -184,6 +215,12 @@ class BaseMutator(ABC):
         exploration = (2 * np.log(self.num_samples) / samples_per_key[key]) ** 0.5
         return exploitation + exploration
 
+    @staticmethod
+    def _get_ludeme_name(parenthetical_text: str) -> str:
+        """Extract the ludeme name from a parenthetical string like '(move ...)'."""
+        inner = parenthetical_text[1:].lstrip()
+        return inner.split(None, 1)[0] if inner else ""
+
     def _select_mutation_location(self, game: ArchiveGame, strategy: MutationSelectionStrategy):
         """Select a balanced parenthetical in the game to replace."""
         parentheticals = [p for p in extract_parentheticals(game.game_str) if p[0] != ""]
@@ -205,6 +242,33 @@ class BaseMutator(ABC):
                 parentheticals_by_ludeme[ludeme].append(p)
             best_ludeme = max(parentheticals_by_ludeme.keys(), key=lambda l: self._ucb_value(l, strategy))
             prefix, middle, suffix, depth = random.choice(parentheticals_by_ludeme[best_ludeme])
+
+        elif strategy == MutationSelectionStrategy.SEMANTIC:
+            # Weight mutation points by gameplay impact
+            # Filter out trivial/structural expressions, then sample weighted by impact
+            candidates = []
+            weights = []
+            for p in parentheticals:
+                ludeme = self._get_ludeme_name(p[1])
+                if ludeme in _SKIP_LUDEMES:
+                    continue
+                # Also skip pure string literals and index lists
+                if ludeme.startswith('"') or ludeme[0:1].isdigit():
+                    continue
+                w = _LUDEME_WEIGHTS.get(ludeme, 1)
+                candidates.append(p)
+                weights.append(w)
+
+            if not candidates:
+                # Fallback to random if everything is filtered
+                candidates = parentheticals
+                weights = [1] * len(candidates)
+
+            # Weighted random selection
+            total = sum(weights)
+            probs = [w / total for w in weights]
+            idx = random.choices(range(len(candidates)), weights=probs, k=1)[0]
+            prefix, middle, suffix, depth = candidates[idx]
 
         return prefix, middle, suffix, depth
 

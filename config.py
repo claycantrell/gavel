@@ -20,6 +20,7 @@ class MutationSelectionStrategy(str, Enum):
     RANDOM = "random"
     UCB_DEPTH = "ucb_depth"
     UCB_LUDEME = "ucb_ludeme"
+    SEMANTIC = "semantic"
 
 class MutationStrategy(str, Enum):
     STANDARD = "standard"

@@ -462,7 +462,7 @@ if __name__ == '__main__':
     parser.add_argument('--mutation_temperature', type=float, default=1.0, help="Temperature to use when performing mutations")
     parser.add_argument('--mutation_beam_size', type=int, default=1, help="Beam size to use when performing mutations")
     parser.add_argument('--mutation_diversity_penalty', type=float, default=0.0, help="Diversity penalty to use when performing mutations across multiple beams")
-    parser.add_argument('--mutation_selection_strategy', type=str, default="random", choices=["random", "ucb_depth", "ucb_ludeme"], help="Strategy for selecting where to perform a mutation in a game")
+    parser.add_argument('--mutation_selection_strategy', type=str, default="random", choices=["random", "ucb_depth", "ucb_ludeme", "semantic"], help="Strategy for selecting where to perform a mutation in a game")
     parser.add_argument('--mutation_strategy', type=str, default="standard", choices=["standard", "grammar_enforced"], help="Strategy for performing a mutation in a game")
 
     # Save arguments
