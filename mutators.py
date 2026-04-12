@@ -591,18 +591,56 @@ class AgenticMutator(BaseMutator):
         return new_games, (prefix, middle, suffix, depth)
 
 
-# Design directions for guided multi-edit mutations
+# Design directions with concrete before/after examples from real Ludax games.
+# Each entry: (direction_text, example_edit_json)
+# The example JSON shows the LLM exactly what pattern to follow.
 _DESIGN_DIRECTIONS = [
-    "Add a capture mechanic (custodial, hop-capture, or flip) and adjust the end condition to account for piece removal.",
-    "Change the board shape or size and adjust start positions to match the new geometry.",
-    "Add a promotion mechanic where pieces upgrade when reaching the opponent's edge, and give promoted pieces stronger movement.",
-    "Add a scoring system and change the win condition to by_score instead of (or in addition to) the current condition.",
-    "Change the movement type (e.g., step→slide, place→hop) and adjust the end condition for the new game dynamics.",
-    "Add an extra_turn effect triggered by a specific action (like capturing) to create chain-move combos.",
-    "Add a second win condition so there are multiple paths to victory (e.g., line OR connection OR elimination).",
-    "Make the game asymmetric: give each player different piece types or movement rules.",
-    "Change the end condition to something more unusual (e.g., lose if you form a line, win by filling a region, win by having fewer pieces).",
-    "Add effects that flip opponent pieces (like Reversi) when certain board patterns are formed.",
+    ("Add custodial capture effects to a placement game.",
+     '''Example edits for adding capture to a placement game:
+[{"find": "(place \\"token\\" (destination (empty)))", "replace": "(place \\"token\\" (destination (empty)) (effects (capture (custodial \\"token\\" 1 orientation:orthogonal))))"}]'''),
+
+    ("Add flip effects (like Reversi) when placing pieces near opponents.",
+     '''Example edits for adding flip:
+[{"find": "(place \\"token\\" (destination (empty)))", "replace": "(place \\"token\\" (destination (empty)) (result (exists (custodial \\"token\\" any))) (effects (flip (custodial \\"token\\" any))))"}]'''),
+
+    ("Add a scoring system and change the win condition to by_score.",
+     '''Example edits for adding scoring:
+[{"find": "(place \\"token\\" (destination (empty)))", "replace": "(place \\"token\\" (destination (empty)) (effects (set_score mover (count (occupied mover)))))"},
+ {"find": "(if (line \\"token\\" 4) (mover win))", "replace": "(if (full_board) (by_score))"}]'''),
+
+    ("Add a second win condition for multiple paths to victory.",
+     '''Example edits for adding a second win condition:
+[{"find": "(end (if (line \\"token\\" 4) (mover win)))", "replace": "(end (if (line \\"token\\" 4) (mover win)) (if (full_board) (by_score)))"}]'''),
+
+    ("Change the end condition to something unusual (e.g., forming a line LOSES).",
+     '''Example edits for a losing-line condition (Yavalath-style):
+[{"find": "(end (if (line \\"token\\" 5) (mover win)))", "replace": "(end (if (line \\"token\\" 5) (mover win)) (if (line \\"token\\" 3) (mover lose)))"}]'''),
+
+    ("Change the board shape and adjust start positions.",
+     '''Example edits for changing board (note: start indices must be valid for new board):
+[{"find": "(board (square 8))", "replace": "(board (hexagon 9))"},
+ {"find": "(place \\"token\\" P1 ((row 6) (row 7)))", "replace": "(place \\"token\\" P1 ((row 7) (row 8)))"}]'''),
+
+    ("Add promotion where pieces upgrade at the opponent's edge.",
+     '''Example edits for adding promotion to a movement game:
+[{"find": "(effects (capture (custodial \\"token\\" 1 orientation:orthogonal)))", "replace": "(effects (capture (custodial \\"token\\" 1 orientation:orthogonal)) (promote \\"pawn\\" \\"king\\" (edge forward)))"}]
+Note: promotion requires both piece types in equipment: (pieces ("pawn" both) ("king" both))'''),
+
+    ("Add extra_turn for chain captures (like checkers multi-jump).",
+     '''Example edits for adding extra turn on capture:
+[{"find": "(effects (capture", "replace": "(effects (if (and (action_was mover hop) (can_move_again hop)) (extra_turn mover same_piece:true)) (capture"}]'''),
+
+    ("Change movement from placement to piece movement with starting positions.",
+     '''Example edits for switching from placement to movement:
+[{"find": "(place \\"token\\" (destination (empty)))", "replace": "(move (step \\"token\\" direction:orthogonal))"},
+ {"find": "(rules (play", "replace": "(rules (start (place \\"token\\" P1 ((row 0) (row 1))) (place \\"token\\" P2 ((row 6) (row 7)))) (play"}]'''),
+
+    ("Make the game asymmetric with different piece types per player.",
+     '''Example edits for asymmetric pieces (Wolf and Sheep style):
+[{"find": "(pieces (\\"token\\" both))", "replace": "(pieces (\\"wolf\\" P1) (\\"sheep\\" P2))"},
+ {"find": "(place \\"token\\"", "replace": "(place \\"wolf\\""},
+ {"find": "(step \\"token\\"", "replace": "(step \\"wolf\\""}]
+Note: you may need multiple find/replace pairs to update all piece references.'''),
 ]
 
 MULTI_EDIT_SYSTEM = """You are an expert board game designer working with the Ludax game description language.
@@ -647,15 +685,19 @@ class MultiEditMutator(BaseMutator):
         self.temperature = temperature
         self.max_repair_attempts = max_repair_attempts
 
-    async def _plan_and_apply_edits(self, game_str: str, direction: str) -> str:
+    async def _plan_and_apply_edits(self, game_str: str, direction: str, example: str = "") -> str:
         """Plan coordinated edits, apply them, validate result."""
         import json as json_mod
 
-        messages = [{"role": "user", "content": (
+        prompt = (
             f"Here is a Ludax board game:\n\n{game_str}\n\n"
             f"Design direction: {direction}\n\n"
-            f"Plan 2-3 coordinated find-and-replace edits to implement this direction."
-        )}]
+        )
+        if example:
+            prompt += f"{example}\n\n"
+        prompt += "Plan 2-3 coordinated find-and-replace edits to implement this direction. Adapt the example pattern to fit this specific game."
+
+        messages = [{"role": "user", "content": prompt}]
 
         response = await self.async_client.messages.create(
             model=self.model_name, max_tokens=1024, temperature=self.temperature,
@@ -671,7 +713,25 @@ class MultiEditMutator(BaseMutator):
         try:
             edits = json_mod.loads(raw)
         except json_mod.JSONDecodeError:
-            raise ValueError(f"LLM returned invalid JSON: {raw[:100]}")
+            # LLM returned prose instead of JSON — retry with stern instruction
+            messages.append({"role": "assistant", "content": raw})
+            messages.append({"role": "user", "content":
+                "You must respond with ONLY a JSON array of edits. No explanation, no commentary. "
+                "Example format: [{\"find\": \"...\", \"replace\": \"...\"}]"
+            })
+            response = await self.async_client.messages.create(
+                model=self.model_name, max_tokens=1024, temperature=0.5,
+                system=MULTI_EDIT_SYSTEM, messages=messages,
+            )
+            raw = response.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                if raw.endswith("```"): raw = raw[:-3]
+                raw = raw.strip()
+            try:
+                edits = json_mod.loads(raw)
+            except json_mod.JSONDecodeError:
+                raise ValueError(f"LLM returned invalid JSON after retry: {raw[:80]}")
 
         if not isinstance(edits, list) or not edits:
             raise ValueError(f"Expected a non-empty JSON array, got: {raw[:100]}")
@@ -730,10 +790,11 @@ class MultiEditMutator(BaseMutator):
                mutation_strategy: MutationStrategy,
                min_novelty: float = 0.10):
         """Generate mutations via coordinated multi-edits with random design directions."""
-        directions = random.sample(_DESIGN_DIRECTIONS, min(self.num_return_sequences, len(_DESIGN_DIRECTIONS)))
+        selected = random.sample(_DESIGN_DIRECTIONS, min(self.num_return_sequences, len(_DESIGN_DIRECTIONS)))
 
         async def _run():
-            tasks = [self._plan_and_apply_edits(game.game_str, d) for d in directions]
+            tasks = [self._plan_and_apply_edits(game.game_str, direction, example)
+                     for direction, example in selected]
             return await asyncio.gather(*tasks, return_exceptions=True)
 
         try:
@@ -749,15 +810,16 @@ class MultiEditMutator(BaseMutator):
             results = asyncio.run(_run())
 
         new_games = []
+        direction_names = [d for d, _ in selected]
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                print(f"  MultiEdit [{directions[i][:30]}...]: {result}")
+                print(f"  MultiEdit [{direction_names[i][:30]}...]: {result}")
                 continue
             dist = self._normalized_edit_distance(result, game.game_str)
             if dist >= min_novelty:
                 new_games.append(result)
 
-        dummy_mutation = ("", "; ".join(d[:40] for d in directions), "", 0)
+        dummy_mutation = ("", "; ".join(d[:40] for d in direction_names), "", 0)
         return new_games, dummy_mutation
 
 
