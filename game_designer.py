@@ -42,9 +42,8 @@ Output a JSON object with these fields:
 - "name": a evocative game name (2-3 words)
 - "theme": a 2-3 sentence backstory/theme (what's the world? who are the players? what's at stake?)
 - "board": one of: "square 5", "square 7", "square 8", "square 9", "hexagon 7", "hexagon 9", "hex_rectangle 7 7", "hex_rectangle 9 9", "rectangle 6 8"
-- "mechanic": the core player action — one of: "placement" (drop pieces to form patterns or control territory), "movement" (slide/step/hop pieces already on the board), "placement_with_effects" (place pieces that trigger board-changing effects)
 - "win_condition": what ends the game — must be achievable through board play alone (no dice, cards, or random events)
-- "twist": one unique rule expressible through board geometry, capture/flip patterns, or scoring — no dice, cards, hidden info, or external components
+- "twist": one unique rule expressible through board geometry, piece interactions, or scoring — no dice, cards, hidden info, or external components
 
 Your theme MUST be inspired by the random seed words provided in the user message. Interpret them creatively — they are evocative sparks, not literal requirements. The theme should MOTIVATE the mechanics.
 
@@ -214,14 +213,13 @@ def generate_game(client: anthropic.Anthropic, concept: dict,
     concept["archetype"] = arch_name
 
     brief = (
-        f"Game: \"{concept['name']}\"\n"
         f"Theme: {concept['theme']}\n"
-        f"Board: {concept['board']}\n"
-        f"Core mechanic: {concept['mechanic']}\n"
-        f"Win condition: {concept['win_condition']}\n"
         f"Twist: {concept['twist']}\n\n"
         f"Archetype: {arch_name} — {arch_desc}\n"
         f"Reference example (use as SYNTAX GUIDE only, do NOT copy):\n{arch_example}\n\n"
+        f"Game name: \"{concept['name']}\"\n"
+        f"Board: {concept['board']}\n"
+        f"Win condition: {concept['win_condition']}\n\n"
         f"Design a complete Ludax game that brings this theme to life. Transform the archetype — don't clone it."
     )
 
@@ -282,7 +280,7 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
 
         log(f"Game {i+1}: \"{concept.get('name', '?')}\" (seeds: {concept.get('seed_words', '?')})")
         log(f"  Theme: {concept.get('theme', '?')[:80]}")
-        log(f"  Board: {concept.get('board', '?')} | Mechanic: {concept.get('mechanic', '?')} | Archetype: {concept.get('archetype', '?')}")
+        log(f"  Board: {concept.get('board', '?')}")
         log(f"  Win: {concept.get('win_condition', '?')[:60]}")
         log(f"  Twist: {concept.get('twist', '?')[:60]}")
 
@@ -296,6 +294,8 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
         if game_str is None:
             log(f"  GRAMMAR FAILED after repairs")
             continue
+
+        log(f"  Archetype: {concept.get('archetype', '?')}")
 
         # Step 3: Evaluate
         try:
