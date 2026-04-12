@@ -42,7 +42,7 @@ Output a JSON object with these fields:
 - "name": a evocative game name (2-3 words)
 - "theme": a 2-3 sentence backstory/theme (what's the world? who are the players? what's at stake?)
 - "board": one of: "square 5", "square 7", "square 8", "square 9", "hexagon 7", "hexagon 9", "hex_rectangle 7 7", "hex_rectangle 9 9", "rectangle 6 8"
-- "mechanic": the core player action — one of: "placement" (drop pieces on empty cells), "movement" (slide/step/hop existing pieces), "placement_with_capture" (place + flip or custodial capture)
+- "mechanic": the core player action — one of: "placement" (drop pieces to form patterns or control territory), "movement" (slide/step/hop pieces already on the board), "placement_with_effects" (place pieces that trigger board-changing effects)
 - "win_condition": what ends the game — must be achievable through board play alone (no dice, cards, or random events)
 - "twist": one unique rule expressible through board geometry, capture/flip patterns, or scoring — no dice, cards, hidden info, or external components
 
@@ -79,8 +79,11 @@ GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept, ou
 
 === KEY SYNTAX ===
 - Effects go INSIDE (place ...) or (move ...): (effects (capture ...) (promote ...) (flip ...) (set_score ...) (extra_turn ...))
-- Custodial capture: (capture (custodial "piece" 1 orientation:orthogonal|diagonal|any))
-- Flip: (flip (custodial "piece" any))
+- Capture (remove pieces): (capture (custodial "piece" 1 orientation:orthogonal|diagonal|any))
+- Flip (change ownership): (flip (custodial "piece" any))
+- Promote (upgrade pieces): (promote "pawn" "king" (edge forward))
+- Extra turn: (extra_turn mover same_piece:true)
+- Scoring: (set_score mover (count (occupied mover)))
 - Line win: (if (line "piece" N) (mover win))
 - Connection: (if (>= (connected "piece" ((edge forward) (edge backward))) 2) (mover win))
 - No moves: (if (no_legal_actions) (mover win|lose))
