@@ -1,133 +1,157 @@
-# GAVEL: Games via Evolution and Language Models
+# GAVEL: AI Board Game Designer
 
-A system for automatically generating novel board games by combining evolutionary search (MAP-Elites) with large language models. Originally based on the [GAVEL paper](https://arxiv.org/abs/2407.09388) (NeurIPS 2024), this fork modernizes the entire pipeline.
+Generates novel, playable board games from scratch using LLMs and evolutionary search. Themes are invented from random word seeds, mechanics are grounded in a formal game DSL, and games are evaluated via JAX-accelerated simulation.
 
-## What changed
+Based on the [GAVEL paper](https://arxiv.org/abs/2407.09388) (NeurIPS 2024), rebuilt from the ground up.
 
-The original system used a fine-tuned CodeLlama-13b model with Java-based Ludii evaluation. This fork replaces every major component:
+## How it works
 
-| Component | Original | This fork |
-|---|---|---|
-| **LLM** | Fine-tuned CodeLlama-13b (40hr training) | Claude Sonnet/Opus via Anthropic API (zero training) |
-| **Game DSL** | Ludii `.lud` (Java subprocess) | [Ludax](https://github.com/gdrtodd/ludax) `.ldx` (JAX-accelerated) |
-| **Grammar** | `raise NotImplementedError` | Formal Lark grammar validation + self-repair |
-| **Evaluation** | 10 MCTS games via Java (~seconds each) | 100 vmapped random playouts + MCTS skill trace (~8s total) |
-| **Mutation** | Fill-in-the-blank FITM | 4 strategies: single-point, agentic, multi-edit, semantic targeting |
-| **Fitness** | Hand-crafted thresholds + harmonic mean | Balance + completion + decision + skill trace (+ optional LLM-as-judge) |
-| **Archive** | PCA on 1000+ Java-extracted concepts | PCA on 57 parser-extracted structural features |
-| **Dependencies** | torch, transformers, Java, CUDA | anthropic, jax, lark |
-
-## Setup
-
-```bash
-# Clone and install
-git clone https://github.com/gdrtodd/ludax  # JAX game engine
-pip install -e ./ludax
-pip install anthropic lark numpy scikit-learn
-
-# Set your API key
-export ANTHROPIC_API_KEY=sk-ant-...
+```
+Random words (wonderwords)
+    → LLM invents theme + backstory
+    → Archetype selected (line, territory, race, elimination, etc.)
+    → LLM writes rules as comments + Ludax code in one call
+    → Grammar validation (Lark) + auto-fix (duplicate pieces, etc.)
+    → JAX-accelerated evaluation (balance, completion, outcome variance, mechanic frequency)
+    → Diagnose problems → LLM fixes specific issues → re-evaluate
+    → Iterate until game is good
 ```
 
 ## Quick start
 
-Generate games with the Ludax pipeline (no Java, no GPU required):
-
 ```bash
-python evolution.py \
-    --use_ludax \
-    --use_anthropic --anthropic_model claude-sonnet-4-6 \
-    --fitness_evaluation_strategy ludax \
-    --archive_type structural \
-    --mutation_selection_strategy semantic \
-    --num_selections 3 --num_mutations 2 \
-    --num_epochs 100 \
-    --save_dir ./exp_outputs/ludax_run --overwrite
+# Install
+pip install -e ~/path/to/ludax    # JAX game engine
+pip install anthropic lark numpy scikit-learn wonderwords
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Generate 10 games in parallel (~45 seconds)
+python3 -u game_designer.py 10 claude-sonnet-4-6 42
+
+# Diagnose and fix the best game
+python3 -u run_diagnose_iterate.py
+
+# Play in the browser
+cd ~/path/to/ludax/examples/02-ludax_gui && python3 interactive.py --port 8080
 ```
 
-### Mutation strategies
+## Game generation pipeline
 
-**Single-point** (default with `--use_anthropic`): Replace one parenthetical expression. 97% grammar success rate. Fast, reliable, conservative changes.
+### 1. Theme generation (`game_designer.py`)
 
-**Agentic** (`--use_agentic`): Multi-turn propose-critique-refine loop. The model proposes a mutation, self-critiques for syntax/balance/fun issues, then refines. Higher quality mutations, catches its own errors.
+Random word pairs (e.g., "skinny sunflower, dessert") seed a theme prompt. The LLM invents a name, backstory, board, win condition, and twist. No mechanic is prescribed — the archetype handles that.
 
-**Multi-edit** (`--use_multi_edit`): Coordinated find-and-replace edits guided by design directions (e.g., "add capture mechanics", "change the board shape", "make the game asymmetric"). Each edit is validated individually. 50% success rate but produces coordinated multi-part changes that single-point mutations can't.
+### 2. Archetype rotation
 
-### Fitness evaluation strategies
+10 archetypes rotate so every game uses a different mechanical foundation:
 
-- `ludax` — JAX-accelerated random playouts + MCTS skill trace. No Java needed.
-- `llm_judge` — Claude evaluates game quality (coherence, interestingness, balance, novelty, completeness). No simulation needed.
-- `adaptive` — LLM pre-filter, then full simulation only for promising games. Saves compute.
-- `random` / `uct` / `one_ply` / `combined` — Original Java-based evaluation (requires Ludii fork).
+| Archetype | Description |
+|---|---|
+| `line` | Form N in a row to win |
+| `territory` | Custodial capture, score by piece count |
+| `connection` | Connect opposite board edges |
+| `race_with_capture` | Move forward, hop-capture opponents |
+| `elimination` | Hop-capture all opponent pieces, chain jumps |
+| `flip_territory` | Place pieces that flip opponents (Reversi-style) |
+| `promotion_battle` | Pawns promote to kings at the far edge |
+| `asymmetric` | Different piece types per player |
+| `score_race` | Capture scoring, first to target wins |
+| `line_with_penalty` | Long line wins, short line LOSES (Yavalath-style) |
 
-### Archive types
+Each archetype includes a complete working Ludax example as a syntax guide.
 
-- `structural` — PCA on 57 features extracted from the game AST (board type, piece count, movement/capture/end-condition ludemes). No Java dependency.
-- `selected_concept` / `pca` / `pca_and_length` — Original Java-based concept extraction.
+### 3. Inline rule comments
 
-## Architecture
+The LLM writes rules in plain English as comments before the code:
 
 ```
-Game string (.ldx)
-    -> Lark grammar validation (ludax_grammar.py)
-    -> LudaxEnvironment compilation
-    -> Random playouts via jax.vmap (ludax_fitness.py)
-    -> MCTS vs random skill trace
-    -> MAP-Elites archive (structural features from AST)
-    -> Mutation (AnthropicMutator / AgenticMutator / MultiEditMutator)
-    -> Grammar self-repair loop if invalid
-    -> Novelty filter (reject near-identity mutations)
-    -> Back to evaluation
+;; SETUP: Empty hex board. No starting pieces.
+;; TURN: Place one grove stone on any empty cell (except center).
+;; EFFECTS: Custodial capture orthogonally (range 2). Diagonal capture (range 1).
+;;          Flip pieces adjacent to center. Score = your piece count.
+;; WIN: When board is full, highest score wins.
+(game "Elm Accord" ...)
 ```
 
-### Key files
+This forces coherent design thinking in a single API call.
+
+### 4. Evaluation (`ludax_fitness.py`)
+
+JAX-accelerated via [Ludax](https://github.com/gdrtodd/ludax):
+
+- **Balance**: P1 vs P2 win rate from 30 random playouts
+- **Completion**: fraction of games that reach a conclusion
+- **Decision moves**: game length as a proxy for decision depth
+- **Outcome variance**: std of final scores across games (do decisions matter?)
+- **Mechanic frequency**: fraction of turns with significant board changes
+- **MCTS skill trace**: does thinking beat random play? (on final candidates only)
+
+Fitness penalties:
+- Dead mechanics (effects that fire <5% of turns): 0.3x
+- Low outcome variance (<5 std): 0.3x
+
+### 5. Diagnose and fix (`run_diagnose_iterate.py`)
+
+Instead of random mutation, the iteration loop:
+
+1. **Plays the game** and collects metrics
+2. **Diagnoses specific problems**: P1_DOMINATES, INSTANT_END, DECISIONS_DONT_MATTER, DEAD_MECHANIC, GAMES_DONT_END
+3. **Tells the LLM exactly what's wrong** and asks for a targeted fix
+4. **Escalates** after 3 failed attempts — tells the LLM to make radical changes
+
+Result: 0.271 → 0.874 in a single targeted fix (vs 8 generations of random mutation for similar improvement).
+
+## Results
+
+Best games generated:
+
+| Game | Fitness | Balance | Turns | How it was made |
+|---|---|---|---|---|
+| Plumage Wars | 0.974 | 0.92 | 77 | Single-shot generation |
+| Ember Covenant | 0.928 | 0.80 | 61 | Single-shot (race archetype) |
+| Elm Accord v2 | 0.874 | 0.91 | 95 | Diagnose-and-fix from 0.271 |
+| Blue Note | 0.873 | 0.80 | 42 | Single-shot (jazz theme) |
+
+Generation stats (best run): 10/10 playable, 10 different archetypes, 34 seconds parallel.
+
+## Key files
 
 | File | Purpose |
 |---|---|
-| `evolution.py` | MAP-Elites search loop, CLI entry point |
-| `mutators.py` | All mutation strategies (BaseMutator, AnthropicMutator, AgenticMutator, MultiEditMutator) |
-| `ludax_fitness.py` | JAX-accelerated game evaluation + MCTS skill trace |
+| `game_designer.py` | Theme generation, archetype rotation, game generation, parallel batch runs |
+| `run_diagnose_iterate.py` | Diagnose-and-fix iteration loop |
+| `run_iterate.py` | Random mutation iteration loop (legacy) |
+| `run_evolution.py` | MAP-Elites evolution loop (legacy) |
+| `ludax_fitness.py` | JAX evaluation: random playouts, engagement metrics, MCTS skill trace |
 | `ludax_grammar.py` | Lark grammar validation with actionable error messages |
 | `llm_fitness.py` | LLM-as-judge fitness evaluation |
+| `mutators.py` | Mutation strategies: single-point, agentic, multi-edit |
 | `ludii_parser.py` | S-expression parser, structural feature extraction |
-| `archives.py` | MAP-Elites archive types (StructuralPCAArchive, etc.) |
-| `config.py` | Enums, fitness thresholds, shared constants |
+| `archives.py` | MAP-Elites archive types |
+| `evolution.py` | MAP-Elites search loop |
 
-### Legacy files (original Ludii pipeline)
+## Playing games
 
-| File | Purpose |
-|---|---|
-| `java_api.py` | Java subprocess communication with Ludii |
-| `fitness_helpers.py` | Original Java-based fitness evaluation |
-| `java_helpers.py` | Ludii concept names, JAR paths |
-| `train.py` | CodeLlama fine-tuning script |
-| `ludii_datasets.py` | FITM training data generation |
-| `ludii_fork/` | Embedded Ludii game engine (Java) |
+The Ludax GUI runs at `http://localhost:8080` with:
+- All generated games in the dropdown
+- Auto-generated rules panel explaining mechanics
+- AI opponents: random, one-ply lookahead, MCTS (50 simulations)
+
+## Architecture decisions
+
+**Why Ludax over Ludii?** Ludii is more expressive (~850 games vs ~250) but requires Java subprocesses and is 100x slower. Ludax compiles to JAX — evaluation takes 1.5s instead of minutes. The expressiveness gap is smaller than it looks: Ludax supports hop capture, promotion, chain jumps, asymmetric pieces, flip, scoring — enough for rich games.
+
+**Why not fine-tune a model?** The original GAVEL fine-tuned CodeLlama-13b for 40 hours. With Claude Sonnet, zero-shot generation with good prompts produces better results. The LLM understands game design; it just needs the right syntax reference and diagnostic feedback.
+
+**Why diagnose-and-fix over random mutation?** Random mutation found improvements by luck (0.815 → 0.934 in 8 generations). Targeted diagnosis found the same improvement in 1 fix (0.271 → 0.874). Telling the LLM "P1 wins 90% of the time" is more useful than "change this random parenthetical."
 
 ## Original paper
-
-The fine-tuned model checkpoint and dataset from the original paper are available on HuggingFace:
-- [Model](https://huggingface.co/LudiiLMs/code-llama-13b-fitm-mask-heldout-1-epoch)
-- [Dataset](https://huggingface.co/datasets/LudiiLMs/code-llama-13b-fitm-mask-heldout-1-epoch-base-data)
-
-To run the original experiment (requires torch, transformers, Java):
-```bash
-python evolution.py --model LudiiLMs/code-llama-13b-fitm-mask-heldout-1-epoch \
-    --fitness_evaluation_strategy uct --games_per_eval 10 \
-    --num_fitness_evals 1 --thinking_time 0.25 --max_turns 50 \
-    --archive_type pca --num_selections 3 --num_mutations 3 \
-    --fitness_eval_timeout 300 --num_threads 6 \
-    --save_dir ./exp_outputs/main_experiment --overwrite --add_current_date \
-    --seed 1
-```
-
-## Citation
 
 ```
 @inproceedings{todd2024gavel,
   title={GAVEL: Generating Games Via Evolution and Language Models},
   author={Todd, Graham and Padula, Alexander and Stephenson, Matthew and Piette, Eric and Soemers, Dennis and Togelius, Julian},
-  booktitle={NeurIPS 2024, the Thirty-Eighth Annual Conference on Neural Information Processing Systems},
+  booktitle={NeurIPS 2024},
   year={2024}
 }
 ```
