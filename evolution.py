@@ -24,6 +24,8 @@ from config import ArchiveGame, MutationSelectionStrategy, EliteSelectionStrateg
 from fitness_helpers import _get_fast_evaluation, _close_fast_evaluation, _evaluate_fitness, _compute_balance, _compute_drawishness, FITNESS_METRIC_KEYS, UNCOMPILABLE_FITNESS
 from java_helpers import SYNTACTIC_BEHAVIORAL_CHARACTERISTICS, SEMANTIC_BEHAVIORAL_CHARACTERISTICS
 from llm_fitness import LLMFitnessEvaluator
+from ludax_fitness import evaluate_game as ludax_evaluate_game, close_evaluation as ludax_close
+from ludax_grammar import validate_game as ludax_validate
 from mutators import LLMMutator, AnthropicMutator, AgenticMutator
 from utils import gpu_utilization, spin_gpu
 
@@ -90,6 +92,9 @@ class MAPElitesSearch():
                                          num_games=games_per_eval, max_turns=max_turns,
                                          timeout_duration=self.fitness_eval_timeout)
 
+        elif fitness_evaluation_strategy == FitnessEvaluationStrategy.LUDAX:
+            self.evaluation_fn = partial(self._ludax_eval, num_games=games_per_eval)
+
         self.archive = archive
         self.num_selections = num_selections
         self.elite_selection_strategy = elite_selection_strategy
@@ -111,6 +116,23 @@ class MAPElitesSearch():
 
         return game_str
     
+    @staticmethod
+    def _ludax_eval(game_str: str, num_games: int = 50):
+        '''
+        Evaluate game using Ludax JAX-accelerated environment.
+        Validates grammar first, then runs random playouts.
+        '''
+        # Fast grammar check before expensive compilation
+        is_valid, err = ludax_validate(game_str)
+        if not is_valid:
+            from config import UNCOMPILABLE_FITNESS
+            return {"compilable": False, "playable": False, "balance": -1, "completion": -1,
+                    "drawishness": -1, "mean_turns": -1, "decision_moves": -1,
+                    "board_coverage_default": -1, "trace_score": -1, "wins": [],
+                    "game_str": game_str, "error": f"Grammar: {err[:200]}"}
+
+        return ludax_evaluate_game(game_str, num_random_games=num_games)
+
     def _llm_eval(self, game_str: str):
         '''
         Evaluate game quality using an LLM judge (no Java/simulation needed)
@@ -404,6 +426,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_anthropic', action='store_true', help="Use Anthropic API instead of local HuggingFace model")
     parser.add_argument('--use_agentic', action='store_true', help="Use agentic propose-critique-refine mutation loop (implies --use_anthropic)")
     parser.add_argument('--anthropic_model', type=str, default="claude-opus-4-6", help="Anthropic model to use (e.g. claude-opus-4-6, claude-sonnet-4-6)")
+    parser.add_argument('--use_ludax', action='store_true', help="Use Ludax (.ldx) instead of Ludii (.lud) — enables grammar validation, JAX evaluation, and Ludax-aware prompts")
     parser.add_argument('--verbose', action='store_true', help="Whether to print verbose output")
     parser.add_argument('--spin_gpu', action='store_true', help="Whether to spin the GPU during evaluation")
 
@@ -426,7 +449,7 @@ if __name__ == '__main__':
     
     # Fitness arguments
     parser.add_argument('--fitness_aggregator', type=str, default="hmean", choices=["avg", "hmean", "min"], help="Aggregation function to use when combining evaluation metrics into a fitness score")
-    parser.add_argument('--fitness_evaluation_strategy', type=str, default="random", choices=["random", "uct", "one_ply", "combined", "llm_judge", "adaptive"], help="Strategy for evaluating fitnesses")
+    parser.add_argument('--fitness_evaluation_strategy', type=str, default="random", choices=["random", "uct", "one_ply", "combined", "llm_judge", "adaptive", "ludax"], help="Strategy for evaluating fitnesses")
     parser.add_argument('--games_per_eval', type=int, default=5, help="Number of games to simulate for each evaluation")
     parser.add_argument('--thinking_time', type=float, default=0.1, help="Thinking time to use per move when evaluating fitnesses with search agents")
     parser.add_argument('--max_turns', type=int, default=250, help="Maximum number of turns to allow for each game during evaluation")
@@ -478,12 +501,17 @@ if __name__ == '__main__':
     set_seed(args.seed)
 
     # Create the mutator (Agentic / Anthropic API / local HuggingFace)
+    use_ludax = args.use_ludax
+    if use_ludax:
+        print("Ludax mode: using .ldx grammar, Ludax-aware prompts")
+
     if args.use_agentic:
         print(f"Using agentic propose-critique-refine loop with model: {args.anthropic_model}")
         mutator = AgenticMutator(
             model_name=args.anthropic_model,
             num_return_sequences=args.num_mutations,
             temperature=args.mutation_temperature,
+            use_ludax=use_ludax,
         )
     elif args.use_anthropic:
         print(f"Using Anthropic API with model: {args.anthropic_model}")
@@ -491,6 +519,7 @@ if __name__ == '__main__':
             model_name=args.anthropic_model,
             num_return_sequences=args.num_mutations,
             temperature=args.mutation_temperature,
+            use_ludax=use_ludax,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(args.model_name)
@@ -576,8 +605,24 @@ if __name__ == '__main__':
         verbose=args.verbose
     )
 
-    # Load the dataset in order to determine the games that initially seed the archive, unless the held-out set is being used
-    if args.seed_with_heldout_set:
+    # Load the dataset in order to determine the games that initially seed the archive
+    if use_ludax:
+        # Seed with bundled Ludax .ldx games
+        import ludax as _ludax_pkg
+        ludax_games_dir = os.path.join(os.path.dirname(_ludax_pkg.__file__), "games")
+        ldx_files = glob.glob(os.path.join(ludax_games_dir, "*.ldx"))
+        initial_game_strs = []
+        initial_game_names = []
+        for f in sorted(ldx_files):
+            name = os.path.splitext(os.path.basename(f))[0]
+            if name == "test" or name == "gridworld":
+                continue  # skip non-game files
+            with open(f) as fh:
+                initial_game_strs.append(fh.read())
+            initial_game_names.append(name)
+        print(f"Seeding archive with {len(initial_game_strs)} Ludax games")
+
+    elif args.seed_with_heldout_set:
         initial_game_names = VALIDATION_GAMES
         initial_game_strs = []
         for name in initial_game_names:

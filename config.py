@@ -32,6 +32,7 @@ class FitnessEvaluationStrategy(str, Enum):
     COMBINED = "combined"
     LLM_JUDGE = "llm_judge"
     ADAPTIVE = "adaptive"
+    LUDAX = "ludax"
 
 class FitnessAggregationFn(str, Enum):
     MEAN = "mean"
