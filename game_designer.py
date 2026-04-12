@@ -46,9 +46,32 @@ Output a JSON object with these fields:
 - "win_condition": what ends the game — choose something that fits the theme
 - "twist": one unique rule that makes this game different from all others — something surprising that emerges from the theme
 
-Be creative with the theme. Draw from history, mythology, nature, science, warfare, exploration, trade, politics, espionage, astronomy, archaeology, alchemy, music, architecture — not just abstract strategy. AVOID ocean/tide/water themes (overused). The theme should MOTIVATE the mechanics.
+The theme MUST be from the specific category provided in the user message. Do NOT deviate. The theme should MOTIVATE the mechanics.
 
 Output ONLY the JSON. No markdown fences."""
+
+THEME_CATEGORIES = [
+    "espionage during the Cold War",
+    "ancient Egyptian tomb builders",
+    "rival astronomers mapping constellations",
+    "medieval alchemists transmuting elements",
+    "underground mycelium networks in a forest",
+    "competing architects building a cathedral",
+    "samurai clans in feudal Japan",
+    "telegraph operators during a civil war",
+    "rival archaeologists excavating a lost city",
+    "jazz musicians battling for a Harlem stage",
+    "polar explorers racing to a magnetic pole",
+    "merchant caravans on the Silk Road",
+    "dueling clockmakers in Renaissance Prague",
+    "shamans guiding spirits through the afterlife",
+    "rebel cells in a dystopian surveillance state",
+    "deep-sea divers salvaging a shipwreck",
+    "nomadic shepherds competing for grazing land",
+    "orbital engineers building a space station",
+    "competing scribes in the Library of Alexandria",
+    "volcanic island settlers before an eruption",
+]
 
 
 GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept, output a complete, valid Ludax game.
@@ -97,19 +120,25 @@ GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept, ou
 Output ONLY the (game ...) expression. No explanation."""
 
 
-def generate_theme(client: anthropic.Anthropic, model: str = "claude-sonnet-4-6") -> dict:
-    """Generate a random game theme/concept."""
+def generate_theme(client: anthropic.Anthropic, model: str = "claude-sonnet-4-6",
+                   category: typing.Optional[str] = None) -> dict:
+    """Generate a random game theme/concept, optionally from a specific category."""
+    if category is None:
+        category = random.choice(THEME_CATEGORIES)
     resp = client.messages.create(
         model=model, max_tokens=512, temperature=1.0,
         system=THEME_PROMPT,
-        messages=[{"role": "user", "content": "Invent a new board game concept. Be wildly creative."}],
+        messages=[{"role": "user", "content":
+            f"Invent a new board game concept. The theme MUST be: {category}"}],
     )
     raw = resp.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
         if raw.endswith("```"): raw = raw[:-3]
         raw = raw.strip()
-    return json.loads(raw)
+    result = json.loads(raw)
+    result["category"] = category
+    return result
 
 
 def generate_game(client: anthropic.Anthropic, concept: dict,
@@ -170,12 +199,17 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
     log(f"=== NOVEL GAME DESIGNER ===")
     log(f"Generating {num_games} games with {model}\n")
 
+    # Shuffle categories so each game gets a unique theme
+    categories = THEME_CATEGORIES.copy()
+    random.shuffle(categories)
+
     for i in range(num_games):
         t0 = time.time()
+        category = categories[i % len(categories)]
 
         # Step 1: Theme
         try:
-            concept = generate_theme(client, model)
+            concept = generate_theme(client, model, category=category)
         except Exception as e:
             log(f"Game {i+1}: THEME ERROR — {e}")
             continue
