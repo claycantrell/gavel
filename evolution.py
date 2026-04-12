@@ -19,7 +19,7 @@ import scipy.stats as stats
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, set_seed
 
-from archives import MAPElitesArchive, SelectedConceptArchive, ConceptPCAArchive, ConceptsAndLengthArchive
+from archives import MAPElitesArchive, SelectedConceptArchive, ConceptPCAArchive, ConceptsAndLengthArchive, StructuralPCAArchive
 from config import ArchiveGame, MutationSelectionStrategy, EliteSelectionStrategy, MutationStrategy, FitnessEvaluationStrategy, VALIDATION_GAMES
 from fitness_helpers import _get_fast_evaluation, _close_fast_evaluation, _evaluate_fitness, _compute_balance, _compute_drawishness, FITNESS_METRIC_KEYS, UNCOMPILABLE_FITNESS
 from java_helpers import SYNTACTIC_BEHAVIORAL_CHARACTERISTICS, SEMANTIC_BEHAVIORAL_CHARACTERISTICS
@@ -367,7 +367,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_selections', type=int, default=5, help="Number of games to select from the archive per epoch")
 
     # Archive arguments
-    parser.add_argument('--archive_type', default="selected_concept", choices=["selected_concept", "pca", "pca_and_length"], help="Type of archive to use")
+    parser.add_argument('--archive_type', default="selected_concept", choices=["selected_concept", "pca", "pca_and_length", "structural"], help="Type of archive to use")
     parser.add_argument('--elite_selection_strategy', type=str, default="random", choices=["random", "ucb"], help="Strategy for selecting elites from the archive")
     parser.add_argument('--entries_per_cell', type=int, default=1, help="Number of games to store in each archive cell")
     parser.add_argument('--bc_type', type=str, default="semantic", choices=["syntactic", "semantic", "combined"], help="Type of behavioral characteristic to use for selected-concept archive")
@@ -485,6 +485,13 @@ if __name__ == '__main__':
             seed=args.seed
         )
 
+    elif args.archive_type == "structural":
+        archive = StructuralPCAArchive(
+            pca_dims=args.pca_dims,
+            cells_per_dim=args.cells_per_dim,
+            entries_per_cell=args.entries_per_cell,
+            seed=args.seed
+        )
 
     # Set the fitness aggregator
     if args.fitness_aggregator == "avg":

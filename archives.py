@@ -1,4 +1,5 @@
 from collections import defaultdict
+import glob as globmod
 import pickle
 import os
 import random
@@ -13,6 +14,7 @@ from config import ArchiveGame, EliteSelectionStrategy
 from java_api import Concepts
 from java_helpers import CONCEPT_NAMES, CONCEPT_DTYPES
 from fitness_helpers import UNCOMPILABLE_FITNESS
+from ludii_parser import get_structural_feature_vector
 
 class MAPElitesArchive():
     '''
@@ -295,4 +297,70 @@ class ConceptsAndLengthArchive(MAPElitesArchive):
 
         cell = tuple(pca_dimension_indices + length_index)
 
+        return cell
+
+
+class StructuralPCAArchive(MAPElitesArchive):
+    """
+    Archive using PCA on structural features extracted from the Ludii AST.
+    No Java dependency — uses ludii_parser to extract board type, piece count,
+    movement/capture/end-condition ludemes, and complexity metrics.
+
+    Can optionally fit PCA on a set of seed games from .lud files, or from
+    a HuggingFace dataset.
+    """
+
+    def __init__(self,
+                 pca_dims: int = 2,
+                 cells_per_dim: int = 40,
+                 entries_per_cell: int = 1,
+                 seed_game_strs: typing.Optional[typing.List[str]] = None,
+                 game_dir: str = "ludii_data/games/expanded",
+                 seed: int = 42):
+
+        super().__init__(entries_per_cell)
+        self.pca_dims = pca_dims
+        self.cells_per_dim = cells_per_dim
+
+        # Collect seed games for fitting PCA
+        if seed_game_strs is None:
+            lud_files = globmod.glob(os.path.join(game_dir, "**", "*.lud"), recursive=True)
+            seed_game_strs = []
+            for f in lud_files[:500]:  # cap to avoid slow startup
+                with open(f) as fh:
+                    seed_game_strs.append(fh.read().replace("\n", " ").strip())
+
+        # Extract structural feature vectors
+        vectors = []
+        for gs in tqdm(seed_game_strs, desc="Extracting structural features", leave=False):
+            try:
+                vectors.append(get_structural_feature_vector(gs))
+            except Exception:
+                continue
+
+        feature_matrix = np.array(vectors)
+
+        # Fit PCA
+        self.pca_model = PCA(n_components=pca_dims, random_state=seed)
+        self.pca_model.fit(feature_matrix)
+        pca_coords = self.pca_model.transform(feature_matrix)
+
+        # Set cell boundaries using percentiles (more uniform cell filling)
+        self.boundaries_per_dim = []
+        for i in range(pca_dims):
+            boundaries = np.percentile(pca_coords[:, i], np.linspace(0, 100, cells_per_dim + 1))
+            self.boundaries_per_dim.append(boundaries)
+
+    @property
+    def max_size(self):
+        return self.cells_per_dim ** self.pca_dims
+
+    def _get_cell(self, game: ArchiveGame):
+        try:
+            vec = get_structural_feature_vector(game.game_str)
+        except Exception:
+            return "none"
+
+        pca_coords = self.pca_model.transform(np.array(vec).reshape(1, -1))[0]
+        cell = tuple(np.digitize(c, b) for c, b in zip(pca_coords, self.boundaries_per_dim))
         return cell
