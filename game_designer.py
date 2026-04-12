@@ -307,80 +307,82 @@ def generate_game(client: anthropic.Anthropic, concept: dict,
     return None  # All repairs failed
 
 
-def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
-    """Generate and evaluate novel games from scratch."""
+def _design_single_game(i: int, archetype: tuple, model: str) -> typing.Optional[dict]:
+    """Design a single game. Returns result dict or None. Thread-safe."""
     client = anthropic.Anthropic()
-    results = []
+    t0 = time.time()
+
+    # Step 1: Theme
+    try:
+        concept = generate_theme(client, model)
+    except Exception as e:
+        log(f"Game {i+1}: THEME ERROR — {e}")
+        return None
+
+    log(f"Game {i+1}: \"{concept.get('name', '?')}\" (seeds: {concept.get('seed_words', '?')})")
+
+    # Step 2: Generate game
+    try:
+        game_str = generate_game(client, concept, model, forced_archetype=archetype)
+    except Exception as e:
+        log(f"  Game {i+1}: GENERATION ERROR — {e}")
+        return None
+
+    if game_str is None:
+        log(f"  Game {i+1} [{concept.get('archetype','?')}]: GRAMMAR FAILED")
+        return None
+
+    # Step 3: Evaluate
+    try:
+        r = evaluate_game(game_str, num_random_games=30, skip_skill_trace=True)
+    except Exception as e:
+        log(f"  Game {i+1} [{concept.get('archetype','?')}]: EVAL ERROR — {e}")
+        return None
+
+    if not r["compilable"] or not r["playable"]:
+        log(f"  Game {i+1} [{concept.get('archetype','?')}]: UNPLAYABLE — {r.get('error', '')[:60]}")
+        return None
+
+    b = max(r["balance"], 0.01)
+    c = max(r["completion"], 0.01)
+    d = max(r["decision_moves"], 0.01)
+    fitness = round((b * c * d) ** (1/3), 3)
+    mf = r.get("mechanic_frequency", 1.0)
+    if mf < 0.05 and r.get("score_volatility", 0) > 0:
+        fitness = round(fitness * 0.3, 3)
+    ov = r.get("outcome_variance", 10)
+    if ov < 5:
+        fitness = round(fitness * 0.3, 3)
+
+    elapsed = time.time() - t0
+    log(f"  Game {i+1} [{concept.get('archetype','?')}]: f={fitness:.3f} bal={r['balance']:.2f} comp={r['completion']:.2f} turns={r['mean_turns']:.0f} ({elapsed:.0f}s)")
+
+    return {"concept": concept, "game_str": game_str, "fitness": fitness, "result": r}
+
+
+def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6", max_parallel: int = 5):
+    """Generate and evaluate novel games in parallel."""
+    import concurrent.futures
 
     log(f"=== NOVEL GAME DESIGNER ===")
-    log(f"Generating {num_games} games with {model}\n")
+    log(f"Generating {num_games} games with {model} ({max_parallel} parallel)\n")
 
     # Shuffle archetypes so each game gets a different type
     shuffled_archetypes = GAME_ARCHETYPES.copy()
     random.shuffle(shuffled_archetypes)
 
-    for i in range(num_games):
-        t0 = time.time()
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        futures = {}
+        for i in range(num_games):
+            arch = shuffled_archetypes[i % len(shuffled_archetypes)]
+            f = executor.submit(_design_single_game, i, arch, model)
+            futures[f] = i
 
-        # Step 1: Theme from random seed words
-        try:
-            concept = generate_theme(client, model)
-        except Exception as e:
-            log(f"Game {i+1}: THEME ERROR — {e}")
-            continue
-
-        log(f"Game {i+1}: \"{concept.get('name', '?')}\" (seeds: {concept.get('seed_words', '?')})")
-        log(f"  Theme: {concept.get('theme', '?')[:80]}")
-        log(f"  Board: {concept.get('board', '?')}")
-        log(f"  Win: {concept.get('win_condition', '?')[:60]}")
-        log(f"  Twist: {concept.get('twist', '?')[:60]}")
-
-        # Step 2: Generate game (force archetype rotation for diversity)
-        forced_arch = shuffled_archetypes[i % len(shuffled_archetypes)]
-        try:
-            game_str = generate_game(client, concept, model, forced_archetype=forced_arch)
-        except Exception as e:
-            log(f"  GENERATION ERROR — {e}")
-            continue
-
-        if game_str is None:
-            log(f"  GRAMMAR FAILED after repairs")
-            continue
-
-        log(f"  Archetype: {concept.get('archetype', '?')}")
-        if concept.get("rules_text"):
-            # Show just the key lines
-            for line in concept["rules_text"].split("\n"):
-                line = line.strip()
-                if line and any(line.startswith(k) for k in ["BOARD:", "PIECES:", "ON YOUR TURN:", "EFFECTS:", "HOW TO WIN:"]):
-                    log(f"  {line[:80]}")
-
-        # Step 3: Evaluate
-        try:
-            r = evaluate_game(game_str, num_random_games=30, skip_skill_trace=True)
-        except Exception as e:
-            log(f"  EVAL ERROR — {e}")
-            continue
-
-        if not r["compilable"] or not r["playable"]:
-            log(f"  UNPLAYABLE — {r.get('error', '')[:60]}")
-            continue
-
-        b = max(r["balance"], 0.01)
-        c = max(r["completion"], 0.01)
-        d = max(r["decision_moves"], 0.01)
-        fitness = round((b * c * d) ** (1/3), 3)
-        # Penalize dead mechanics (effects defined but never fire)
-        mf = r.get("mechanic_frequency", 1.0)
-        if mf < 0.05 and r.get("score_volatility", 0) > 0:
-            fitness = round(fitness * 0.3, 3)
-        # Penalize games where decisions don't matter
-        ov = r.get("outcome_variance", 10)
-        if ov < 5:
-            fitness = round(fitness * 0.3, 3)
-
-        elapsed = time.time() - t0
-        log(f"  PLAYABLE! f={fitness:.3f} bal={r['balance']:.2f} comp={r['completion']:.2f} turns={r['mean_turns']:.0f} ({elapsed:.0f}s)")
+        for f in concurrent.futures.as_completed(futures):
+            result = f.result()
+            if result is not None:
+                results.append(result)
 
         results.append({
             "concept": concept,
