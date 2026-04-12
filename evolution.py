@@ -23,6 +23,7 @@ from archives import MAPElitesArchive, SelectedConceptArchive, ConceptPCAArchive
 from config import ArchiveGame, MutationSelectionStrategy, EliteSelectionStrategy, MutationStrategy, FitnessEvaluationStrategy, VALIDATION_GAMES
 from fitness_helpers import _get_fast_evaluation, _close_fast_evaluation, _evaluate_fitness, _compute_balance, _compute_drawishness, FITNESS_METRIC_KEYS, UNCOMPILABLE_FITNESS
 from java_helpers import SYNTACTIC_BEHAVIORAL_CHARACTERISTICS, SEMANTIC_BEHAVIORAL_CHARACTERISTICS
+from llm_fitness import LLMFitnessEvaluator
 from mutators import LLMMutator, AnthropicMutator
 from utils import gpu_utilization, spin_gpu
 
@@ -79,6 +80,10 @@ class MAPElitesSearch():
             self.evaluation_fn = partial(self._combined_eval, thinking_time=thinking_time, num_games=games_per_eval,
                                          max_turns=max_turns, timeout_duration=self.fitness_eval_timeout)
 
+        elif fitness_evaluation_strategy == FitnessEvaluationStrategy.LLM_JUDGE:
+            self.llm_judge = LLMFitnessEvaluator()
+            self.evaluation_fn = self._llm_eval
+
         self.archive = archive
         self.num_selections = num_selections
         self.elite_selection_strategy = elite_selection_strategy
@@ -100,6 +105,12 @@ class MAPElitesSearch():
 
         return game_str
     
+    def _llm_eval(self, game_str: str):
+        '''
+        Evaluate game quality using an LLM judge (no Java/simulation needed)
+        '''
+        return self.llm_judge.evaluate(game_str)
+
     @staticmethod
     def _random_eval(game_str: str, timeout_duration: int):
         '''
@@ -189,11 +200,12 @@ class MAPElitesSearch():
             for key in FITNESS_METRIC_KEYS:
                 average_evaluation[key] = np.mean([evaluation[key] for evaluation in eval_group])
 
-            # For balance and drawishness, in particular, we manually compute the average from the raw
-            # win counts because the micro-average of balance and drawishness is not meaningful
+            # For balance and drawishness, recompute from raw win counts when available
+            # (LLM evaluations have no wins data, so keep the metric values as-is)
             collected_wins = sum([evaluation["wins"] for evaluation in eval_group], [])
-            average_evaluation["balance"] = _compute_balance(collected_wins)
-            average_evaluation["drawishness"] = _compute_drawishness(collected_wins)
+            if collected_wins:
+                average_evaluation["balance"] = _compute_balance(collected_wins)
+                average_evaluation["drawishness"] = _compute_drawishness(collected_wins)
 
             fitness_score = _evaluate_fitness(average_evaluation, self.fitness_aggregator)
 
@@ -379,7 +391,7 @@ if __name__ == '__main__':
     
     # Fitness arguments
     parser.add_argument('--fitness_aggregator', type=str, default="hmean", choices=["avg", "hmean", "min"], help="Aggregation function to use when combining evaluation metrics into a fitness score")
-    parser.add_argument('--fitness_evaluation_strategy', type=str, default="random", choices=["random", "uct", "one_ply", "combined"], help="Strategy for evaluating fitnesses")
+    parser.add_argument('--fitness_evaluation_strategy', type=str, default="random", choices=["random", "uct", "one_ply", "combined", "llm_judge"], help="Strategy for evaluating fitnesses")
     parser.add_argument('--games_per_eval', type=int, default=5, help="Number of games to simulate for each evaluation")
     parser.add_argument('--thinking_time', type=float, default=0.1, help="Thinking time to use per move when evaluating fitnesses with search agents")
     parser.add_argument('--max_turns', type=int, default=250, help="Maximum number of turns to allow for each game during evaluation")

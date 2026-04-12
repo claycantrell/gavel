@@ -30,6 +30,7 @@ class FitnessEvaluationStrategy(str, Enum):
     UCT = "uct"
     ONE_PLY = "one_ply"
     COMBINED = "combined"
+    LLM_JUDGE = "llm_judge"
 
 class FitnessAggregationFn(str, Enum):
     MEAN = "mean"
