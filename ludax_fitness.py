@@ -50,7 +50,8 @@ def compile_and_check(game_str: str) -> typing.Tuple[typing.Any, str]:
 def evaluate_game(game_str: str,
                   num_random_games: int = 50,
                   num_batches: int = 1,
-                  seed: int = 42) -> typing.Dict[str, float]:
+                  seed: int = 42,
+                  skip_skill_trace: bool = False) -> typing.Dict[str, float]:
     """
     Evaluate a single game string using Ludax.
 
@@ -162,7 +163,9 @@ def evaluate_game(game_str: str,
 
     # Skill trace: measure MCTS vs random win rate for promising games
     # Only compute for games that pass basic quality checks (saves ~8s per bad game)
-    if (evaluation["completion"] > 0.5 and evaluation["balance"] > 0.2
+    if skip_skill_trace:
+        evaluation["trace_score"] = 0
+    elif (evaluation["completion"] > 0.5 and evaluation["balance"] > 0.2
             and evaluation["mean_turns"] > 5):
         try:
             evaluation["trace_score"] = compute_skill_trace(game_str, num_games=6, mcts_sims=30, seed=seed)
