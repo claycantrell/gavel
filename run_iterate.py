@@ -70,6 +70,18 @@ seed_fitness = best["fitness"]
 
 log(f"=== ITERATING ON: \"{seed_name}\" (f={seed_fitness}) ===")
 log(f"Theme: {best['concept']['theme'][:80]}")
+
+# Run MCTS skill trace on the parent ONCE to confirm strategic depth
+from ludax_fitness import compute_skill_trace
+log(f"Computing MCTS skill trace on parent...")
+try:
+    parent_skill = compute_skill_trace(seed_game, num_games=6, mcts_sims=30)
+    log(f"Parent skill trace: {parent_skill:.2f} (MCTS vs random win rate)")
+    if parent_skill < 0.55:
+        log(f"WARNING: Parent has low strategic depth — MCTS barely beats random")
+except Exception as e:
+    parent_skill = -1
+    log(f"Skill trace failed: {e}")
 log(f"")
 
 # --- Setup ---
