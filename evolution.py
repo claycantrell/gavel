@@ -83,9 +83,6 @@ class MAPElitesSearch():
         self.num_selections = num_selections
         self.elite_selection_strategy = elite_selection_strategy
 
-        # Store a record of every evaluated game (in case duplicates are produced)
-        self.evaluation_cache = {}
-
         self.epoch = 0
         self.run_stats = []
         self.ucb_stats = []

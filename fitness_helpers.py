@@ -4,17 +4,10 @@ import numpy as np
 import scipy.stats as stats
 import timeout_decorator
 
+from config import (COMPLETION_THRESHOLD, MEAN_TURNS_THRESHOLD, DECISION_MOVES_THRESHOLD,
+                    BOARD_COVERAGE_THRESHOLD, MIN_SCORE, UNCOMPILABLE_FITNESS, UNPLAYABLE_FITNESS,
+                    UNINTERESTING_FITNESS)
 from java_api import FastTrace, StandardEvaluation
-
-COMPLETION_THRESHOLD = 0.2
-MEAN_TURNS_THRESHOLD = 3
-DECISION_MOVES_THRESHOLD = 0.1
-BOARD_COVERAGE_THRESHOLD = 0.1
-MIN_SCORE = 0.01
-
-UNCOMPILABLE_FITNESS = -3
-UNPLAYABLE_FITNESS = -2
-UNINTERESTING_FITNESS = -1
 
 DEFAULT_AI = "Random"
 DEFAULT_NUM_GAMES = 20
@@ -41,7 +34,7 @@ STANDARD_EVALUATOR = None
 FAST_TRACE_EVALUATOR = None
 
 def _get_fast_evaluation(game_str: str,
-                         evaluation_cache: dict = {},
+                         evaluation_cache: typing.Optional[dict] = None,
                          ai_name: typing.Optional[str] = DEFAULT_AI,
                          num_games: typing.Optional[str] = DEFAULT_NUM_GAMES,
                          thinking_time: typing.Optional[float] = DEFAULT_THINKING_TIME,
@@ -61,7 +54,7 @@ def _get_fast_evaluation(game_str: str,
         FAST_TRACE_EVALUATOR = FastTrace()
 
     # If we've already evaluated this game, then we can just return the cached result
-    if game_str in evaluation_cache:
+    if evaluation_cache is not None and game_str in evaluation_cache:
         return evaluation_cache[game_str]
 
     if timeout_duration != -1:
@@ -119,15 +112,23 @@ def _close_fast_evaluation(game_str):
 def _compute_balance(wins: typing.List[int]):
     '''
     Compute the 'balance' score for a given game from a list of the player win indices per trial. Balance
-    is defined as the largest discrepancy between any two players' win rates
+    is defined as the largest discrepancy between any two players' win rates.
+
+    wins[0] = draws, wins[1] = player 1 wins, wins[2] = player 2 wins, etc.
+    Win rates are computed over decisive (non-draw) games only, so draws don't
+    artificially inflate balance.
     '''
 
     # Edge case for either uncompilable games or games with no finished games
     if len(wins) == 0 or sum(wins) == 0:
         return -1
-    
-    num_games = sum(wins)
-    win_rate_per_player = [wins[idx] / num_games for idx in range(1, len(wins))]
+
+    # Only count decisive games (exclude draws at index 0)
+    decisive_games = sum(wins[1:])
+    if decisive_games == 0:
+        return -1
+
+    win_rate_per_player = [wins[idx] / decisive_games for idx in range(1, len(wins))]
 
     max_discrepancy = max(win_rate_per_player) - min(win_rate_per_player)
 

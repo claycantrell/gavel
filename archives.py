@@ -113,14 +113,12 @@ class MAPElitesArchive():
             return True
 
         else:
-            elite_fitnesses = sorted([elite.fitness_score for elite in self.archive[cell]], reverse=True)
+            # Find the weakest elite in the cell and replace it if the new game is better
+            worst_idx = min(range(len(self.archive[cell])), key=lambda i: self.archive[cell][i].fitness_score)
+            if game.fitness_score > self.archive[cell][worst_idx].fitness_score:
+                self.archive[cell][worst_idx] = game
+                return True
 
-            for idx, fitness in enumerate(elite_fitnesses):
-                if game.fitness_score > fitness:
-                    new_elites = self.archive[cell][:idx] + [game] + self.archive[cell][idx:-1] # ensures elites stay in sorted order
-                    self.archive[cell] = new_elites
-                    return True
-                
         return False
     
     def update_ucb_stats(self, game: ArchiveGame, success: bool):

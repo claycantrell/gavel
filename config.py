@@ -37,6 +37,19 @@ class FitnessAggregationFn(str, Enum):
     MIN = "min"
 
 
+# Fitness evaluation thresholds — shared between fitness_helpers and java_api
+COMPLETION_THRESHOLD = 0.2
+MEAN_TURNS_THRESHOLD = 3
+DECISION_MOVES_THRESHOLD = 0.1
+BOARD_COVERAGE_THRESHOLD = 0.1
+MIN_BALANCE_THRESHOLD = 0.5
+MIN_DECISION_MOVES_THRESHOLD = 0.5
+MIN_SCORE = 0.01
+
+UNCOMPILABLE_FITNESS = -3
+UNPLAYABLE_FITNESS = -2
+UNINTERESTING_FITNESS = -1
+
 VALIDATION_GAMES = [
     "ArdRi",
     "Ataxx",
