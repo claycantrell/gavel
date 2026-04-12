@@ -160,7 +160,15 @@ forward_left | forward_right | up | down | left | right
 - (custodial N) with N > 1 almost never triggers
 - Ludax has NO dice, NO cards, NO hidden info, NO random events
 
-Output ONLY the (game ...) expression. No explanation."""
+First write a brief comment block describing the rules in plain English, then the game code.
+Format:
+;; SETUP: (how pieces start)
+;; TURN: (what a player does)
+;; EFFECTS: (what triggers after a move, be specific)
+;; WIN: (how the game ends)
+(game "Name" ...)
+
+The comments force you to think through the design before writing syntax. Be specific in the comments — "capture by sandwiching exactly 1 opponent piece orthogonally" not just "capture pieces"."""
 
 
 def _random_seed_words() -> str:
@@ -235,45 +243,28 @@ Be specific. "Capture nearby pieces" is bad. "When you place a stone so that exa
 def generate_game(client: anthropic.Anthropic, concept: dict,
                   model: str = "claude-sonnet-4-6", max_repairs: int = 3,
                   forced_archetype: typing.Optional[typing.Tuple] = None) -> typing.Optional[str]:
-    """Generate a complete Ludax game from a concept via two-step: rules then code."""
+    """Generate a Ludax game in one call: inline rule comments + code."""
     if forced_archetype:
         arch_name, arch_desc, arch_example = forced_archetype
     else:
         arch_name, arch_desc, arch_example = _pick_archetype(client, concept, model)
     concept["archetype"] = arch_name
 
-    # Step 1: Write rules in plain English
-    rules_brief = (
+    brief = (
         f"Theme: {concept['theme']}\n"
-        f"Twist: {concept['twist']}\n"
+        f"Twist: {concept['twist']}\n\n"
+        f"Archetype: {arch_name} — {arch_desc}\n"
+        f"Reference example (SYNTAX GUIDE only, do NOT copy):\n{arch_example}\n\n"
         f"Game name: \"{concept['name']}\"\n"
         f"Board: {concept['board']}\n"
-        f"Win condition: {concept['win_condition']}\n"
-        f"Archetype: {arch_name} — {arch_desc}\n\n"
-        f"Write the complete rules for this game."
+        f"Win condition: {concept['win_condition']}\n\n"
+        f"Write the comment block describing your rules, then the game code."
     )
 
-    rules_resp = client.messages.create(
-        model=model, max_tokens=512, temperature=0.7,
-        system=RULES_PROMPT, messages=[{"role": "user", "content": rules_brief}],
-    )
-    rules_text = rules_resp.content[0].text.strip()
-    concept["rules_text"] = rules_text
-
-    # Step 2: Translate rules to Ludax code
-    translate_brief = (
-        f"Translate these board game rules into a valid Ludax game:\n\n"
-        f"{rules_text}\n\n"
-        f"Reference example for the {arch_name} archetype (SYNTAX GUIDE only):\n{arch_example}\n\n"
-        f"IMPORTANT: Only use piece types that are mentioned in the rules above. "
-        f"Every piece in equipment must be used in the play/effects/end sections. "
-        f"Do not add extra piece types."
-    )
-
-    messages = [{"role": "user", "content": translate_brief}]
+    messages = [{"role": "user", "content": brief}]
 
     resp = client.messages.create(
-        model=model, max_tokens=1024, temperature=0.5,
+        model=model, max_tokens=1024, temperature=0.7,
         system=GAME_PROMPT, messages=messages,
     )
     output = resp.content[0].text.strip()
@@ -281,10 +272,19 @@ def generate_game(client: anthropic.Anthropic, concept: dict,
         output = output.split("\n", 1)[1] if "\n" in output else output[3:]
         if output.endswith("```"): output = output[:-3]
         output = output.strip()
-    game_str = output.replace("\n", " ")
+
+    # Extract rule comments before stripping
+    import re as _re
+    comment_lines = [line.strip().lstrip(";").strip()
+                     for line in output.split("\n") if line.strip().startswith(";;")]
+    if comment_lines:
+        concept["rules_text"] = "\n".join(comment_lines)
+
+    # Strip comments and flatten for compilation
+    code_lines = [line for line in output.split("\n") if not line.strip().startswith(";;")]
+    game_str = " ".join(code_lines).strip()
 
     # Auto-fix: merge duplicate piece names ("x" P1) + ("x" P2) → ("x" both)
-    import re as _re
     piece_defs = _re.findall(r'\("(\w+)"\s+(P1|P2|both)\)', game_str)
     seen_names = {}
     for name, owner in piece_defs:
@@ -370,6 +370,9 @@ def _design_single_game(i: int, archetype: tuple, model: str, seed_words: typing
 
     elapsed = time.time() - t0
     log(f"  Game {i+1} [{concept.get('archetype','?')}]: f={fitness:.3f} bal={r['balance']:.2f} comp={r['completion']:.2f} turns={r['mean_turns']:.0f} ({elapsed:.0f}s)")
+    if concept.get("rules_text"):
+        for line in concept["rules_text"].split("\n")[:4]:
+            log(f"    {line[:80]}")
 
     return {"concept": concept, "game_str": game_str, "fitness": fitness, "result": r}
 
