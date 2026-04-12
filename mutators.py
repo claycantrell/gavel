@@ -277,11 +277,34 @@ class BaseMutator(ABC):
         """Generate replacement game strings given the surrounding prefix and suffix."""
         ...
 
+    @staticmethod
+    def _normalized_edit_distance(a: str, b: str) -> float:
+        """Fast normalized edit distance (0=identical, 1=completely different)."""
+        # Use character-level comparison; strip whitespace for fair comparison
+        a_clean = "".join(a.split())
+        b_clean = "".join(b.split())
+        if a_clean == b_clean:
+            return 0.0
+        # Approximate via difflib ratio (faster than full Levenshtein)
+        from difflib import SequenceMatcher
+        return 1.0 - SequenceMatcher(None, a_clean, b_clean).ratio()
+
     def mutate(self, game: ArchiveGame,
                mutation_selection_strategy: MutationSelectionStrategy,
-               mutation_strategy: MutationStrategy):
+               mutation_strategy: MutationStrategy,
+               min_novelty: float = 0.05):
         prefix, middle, suffix, depth = self._select_mutation_location(game, mutation_selection_strategy)
         new_games = self._generate_mutations(prefix, suffix)
+
+        # Novelty filter: reject mutations too similar to the parent
+        if min_novelty > 0:
+            novel_games = []
+            for g in new_games:
+                dist = self._normalized_edit_distance(g, game.game_str)
+                if dist >= min_novelty:
+                    novel_games.append(g)
+            new_games = novel_games
+
         return new_games, (prefix, middle, suffix, depth)
 
     def update_ucb_stats(self, mutation: typing.Tuple[str, str, str, int], success: bool):
@@ -316,8 +339,15 @@ class AnthropicMutator(BaseMutator):
             text = text.strip()
         return text.replace("\n", " ")
 
-    async def _call_api_async(self, prefix: str, suffix: str) -> str:
-        user_prompt = f"Here is a {self.dsl_name} game with a section removed. Generate a replacement for <BLANK>.\n\n{prefix}<BLANK>{suffix}"
+    async def _call_api_async(self, prefix: str, suffix: str, original: str = "") -> str:
+        if original:
+            user_prompt = (
+                f"Here is a {self.dsl_name} game with a section removed. The original section was:\n{original}\n\n"
+                f"Generate a DIFFERENT replacement for <BLANK> that changes the gameplay. "
+                f"Do NOT reproduce the original. Be creative.\n\n{prefix}<BLANK>{suffix}"
+            )
+        else:
+            user_prompt = f"Here is a {self.dsl_name} game with a section removed. Generate a replacement for <BLANK>.\n\n{prefix}<BLANK>{suffix}"
 
         messages = [{"role": "user", "content": user_prompt}]
 
@@ -350,8 +380,9 @@ class AnthropicMutator(BaseMutator):
 
         return output
 
-    async def _generate_mutations_async(self, prefix: str, suffix: str) -> typing.List[str]:
-        tasks = [self._call_api_async(prefix, suffix) for _ in range(self.num_return_sequences)]
+    async def _generate_mutations_async(self, prefix: str, suffix: str,
+                                        original: str = "") -> typing.List[str]:
+        tasks = [self._call_api_async(prefix, suffix, original) for _ in range(self.num_return_sequences)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         new_games = []
@@ -363,18 +394,37 @@ class AnthropicMutator(BaseMutator):
         return new_games
 
     def _generate_mutations(self, prefix: str, suffix: str) -> typing.List[str]:
+        # Called by BaseMutator.mutate; uses stored original from mutate override
+        return self._run_async(self._generate_mutations_async(prefix, suffix, self._current_middle))
+
+    def _run_async(self, coro):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
 
         if loop and loop.is_running():
-            # Already inside an event loop (e.g. Jupyter) — run in a new thread
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(asyncio.run, self._generate_mutations_async(prefix, suffix)).result()
+                return pool.submit(asyncio.run, coro).result()
         else:
-            return asyncio.run(self._generate_mutations_async(prefix, suffix))
+            return asyncio.run(coro)
+
+    def mutate(self, game: ArchiveGame,
+               mutation_selection_strategy: MutationSelectionStrategy,
+               mutation_strategy: MutationStrategy,
+               min_novelty: float = 0.05):
+        """Override to pass the original section to the API for anti-identity prompting."""
+        prefix, middle, suffix, depth = self._select_mutation_location(game, mutation_selection_strategy)
+        self._current_middle = middle
+        new_games = self._generate_mutations(prefix, suffix)
+
+        # Novelty filter
+        if min_novelty > 0:
+            novel = [g for g in new_games if self._normalized_edit_distance(g, game.game_str) >= min_novelty]
+            new_games = novel
+
+        return new_games, (prefix, middle, suffix, depth)
 
 
 AGENTIC_SYSTEM_PROMPT = """You are an expert board game designer working with the Ludii game description language. You design novel, interesting games by modifying existing ones.
@@ -527,11 +577,17 @@ class AgenticMutator(BaseMutator):
 
     def mutate(self, game: ArchiveGame,
                mutation_selection_strategy: MutationSelectionStrategy,
-               mutation_strategy: MutationStrategy):
+               mutation_strategy: MutationStrategy,
+               min_novelty: float = 0.05):
         """Override mutate to pass the original section to the agentic loop."""
         prefix, middle, suffix, depth = self._select_mutation_location(game, mutation_selection_strategy)
         self._current_middle = middle
         new_games = self._generate_mutations(prefix, suffix)
+
+        if min_novelty > 0:
+            novel = [g for g in new_games if self._normalized_edit_distance(g, game.game_str) >= min_novelty]
+            new_games = novel
+
         return new_games, (prefix, middle, suffix, depth)
 
 
