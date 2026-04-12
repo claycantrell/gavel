@@ -26,7 +26,7 @@ from java_helpers import SYNTACTIC_BEHAVIORAL_CHARACTERISTICS, SEMANTIC_BEHAVIOR
 from llm_fitness import LLMFitnessEvaluator
 from ludax_fitness import evaluate_game as ludax_evaluate_game, close_evaluation as ludax_close
 from ludax_grammar import validate_game as ludax_validate
-from mutators import LLMMutator, AnthropicMutator, AgenticMutator
+from mutators import LLMMutator, AnthropicMutator, AgenticMutator, MultiEditMutator
 from utils import gpu_utilization, spin_gpu
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -425,6 +425,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_name', type=str, default="LudiiLMs/code-llama-13b-fitm-mask", help="Name of the model to load")
     parser.add_argument('--use_anthropic', action='store_true', help="Use Anthropic API instead of local HuggingFace model")
     parser.add_argument('--use_agentic', action='store_true', help="Use agentic propose-critique-refine mutation loop (implies --use_anthropic)")
+    parser.add_argument('--use_multi_edit', action='store_true', help="Use guided multi-edit mutations (coordinated full-game rewrites with design directions)")
     parser.add_argument('--anthropic_model', type=str, default="claude-opus-4-6", help="Anthropic model to use (e.g. claude-opus-4-6, claude-sonnet-4-6)")
     parser.add_argument('--use_ludax', action='store_true', help="Use Ludax (.ldx) instead of Ludii (.lud) — enables grammar validation, JAX evaluation, and Ludax-aware prompts")
     parser.add_argument('--verbose', action='store_true', help="Whether to print verbose output")
@@ -505,7 +506,14 @@ if __name__ == '__main__':
     if use_ludax:
         print("Ludax mode: using .ldx grammar, Ludax-aware prompts")
 
-    if args.use_agentic:
+    if args.use_multi_edit:
+        print(f"Using guided multi-edit mutations with model: {args.anthropic_model}")
+        mutator = MultiEditMutator(
+            model_name=args.anthropic_model,
+            num_return_sequences=args.num_mutations,
+            temperature=args.mutation_temperature,
+        )
+    elif args.use_agentic:
         print(f"Using agentic propose-critique-refine loop with model: {args.anthropic_model}")
         mutator = AgenticMutator(
             model_name=args.anthropic_model,

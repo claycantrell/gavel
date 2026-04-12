@@ -591,6 +591,176 @@ class AgenticMutator(BaseMutator):
         return new_games, (prefix, middle, suffix, depth)
 
 
+# Design directions for guided multi-edit mutations
+_DESIGN_DIRECTIONS = [
+    "Add a capture mechanic (custodial, hop-capture, or flip) and adjust the end condition to account for piece removal.",
+    "Change the board shape or size and adjust start positions to match the new geometry.",
+    "Add a promotion mechanic where pieces upgrade when reaching the opponent's edge, and give promoted pieces stronger movement.",
+    "Add a scoring system and change the win condition to by_score instead of (or in addition to) the current condition.",
+    "Change the movement type (e.g., step→slide, place→hop) and adjust the end condition for the new game dynamics.",
+    "Add an extra_turn effect triggered by a specific action (like capturing) to create chain-move combos.",
+    "Add a second win condition so there are multiple paths to victory (e.g., line OR connection OR elimination).",
+    "Make the game asymmetric: give each player different piece types or movement rules.",
+    "Change the end condition to something more unusual (e.g., lose if you form a line, win by filling a region, win by having fewer pieces).",
+    "Add effects that flip opponent pieces (like Reversi) when certain board patterns are formed.",
+]
+
+MULTI_EDIT_SYSTEM = """You are an expert board game designer working with the Ludax game description language.
+
+You will be given a game and a design direction. Your job is to plan 2-3 COORDINATED edits to the game that implement the direction. Each edit replaces one section of the game.
+
+Respond with a JSON array of edits. Each edit has:
+- "find": the exact substring to find and replace (copy it precisely from the game)
+- "replace": the new Ludax expression to substitute
+
+Example: to add custodial capture effects to a placement game, you might output:
+[
+  {"find": "(place \"token\" (destination (empty)))", "replace": "(place \"token\" (destination (empty)) (effects (capture (custodial \"token\" 1 orientation:orthogonal))))"},
+  {"find": "(if (line \"token\" 4) (mover win))", "replace": "(if (line \"token\" 4) (mover win)) (if (captured_all \"token\") (mover win))"}
+]
+
+CRITICAL Ludax rules:
+- effects go INSIDE (place ...) or (move ...), never as siblings
+- (capture ...), (promote ...), (flip ...) go INSIDE (effects ...)
+- Connected: (>= (connected "piece" ((mask1) (mask2))) 2) — double parens
+- Win/loss: (mover win), (mover lose), (draw), (by_score)
+- Piece names in rules must match (pieces ...) in equipment
+- Directions: orthogonal, diagonal, any, forward, backward, forward_left, forward_right
+- Custodial orientation: orientation:orthogonal, orientation:diagonal, orientation:any
+- Boards: (square N), (rectangle W H), (hexagon D), (hex_rectangle W H)
+
+Output ONLY the JSON array. No explanation, no markdown fences."""
+
+
+class MultiEditMutator(BaseMutator):
+    """
+    Guided multi-edit mutator. The LLM plans 2-3 coordinated find-and-replace
+    edits, then we apply them programmatically. Each edit is a small fragment
+    (low grammar failure rate) but they're coordinated for coherent design changes.
+    """
+
+    def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3,
+                 temperature: float = 1.0, max_repair_attempts: int = 2):
+        super().__init__(num_return_sequences)
+        self.async_client = anthropic.AsyncAnthropic()
+        self.model_name = model_name
+        self.temperature = temperature
+        self.max_repair_attempts = max_repair_attempts
+
+    async def _plan_and_apply_edits(self, game_str: str, direction: str) -> str:
+        """Plan coordinated edits, apply them, validate result."""
+        import json as json_mod
+
+        messages = [{"role": "user", "content": (
+            f"Here is a Ludax board game:\n\n{game_str}\n\n"
+            f"Design direction: {direction}\n\n"
+            f"Plan 2-3 coordinated find-and-replace edits to implement this direction."
+        )}]
+
+        response = await self.async_client.messages.create(
+            model=self.model_name, max_tokens=1024, temperature=self.temperature,
+            system=MULTI_EDIT_SYSTEM, messages=messages,
+        )
+
+        raw = response.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"): raw = raw[:-3]
+            raw = raw.strip()
+
+        try:
+            edits = json_mod.loads(raw)
+        except json_mod.JSONDecodeError:
+            raise ValueError(f"LLM returned invalid JSON: {raw[:100]}")
+
+        if not isinstance(edits, list) or not edits:
+            raise ValueError(f"Expected a non-empty JSON array, got: {raw[:100]}")
+
+        # Apply edits sequentially
+        result = game_str
+        for edit in edits:
+            find = edit.get("find", "")
+            replace = edit.get("replace", "")
+            if find and find in result:
+                result = result.replace(find, replace, 1)
+
+        result = result.replace("\n", " ").strip()
+
+        # Grammar validation + repair
+        from ludax_grammar import validate_game
+        is_valid, err = validate_game(result)
+
+        if not is_valid:
+            # Ask LLM to fix the assembled result — use a direct repair prompt, not JSON
+            repair_system = (
+                "You are a Ludax syntax expert. Fix the grammar error in the provided game. "
+                "Output ONLY the complete corrected Ludax game. No JSON, no explanation."
+            )
+            for attempt in range(self.max_repair_attempts):
+                repair_messages = [{"role": "user", "content": (
+                    f"This Ludax game has a grammar error:\n\n{result}\n\n"
+                    f"Error: {err[:300]}\n\n"
+                    f"Fix only the syntax error. Output the complete corrected game."
+                )}]
+                repair_resp = await self.async_client.messages.create(
+                    model=self.model_name, max_tokens=1024, temperature=0.3,
+                    system=repair_system, messages=repair_messages,
+                )
+                fixed = repair_resp.content[0].text.strip()
+                if fixed.startswith("```"):
+                    fixed = fixed.split("\n", 1)[1] if "\n" in fixed else fixed[3:]
+                    if fixed.endswith("```"): fixed = fixed[:-3]
+                    fixed = fixed.strip()
+                result = fixed.replace("\n", " ").strip()
+
+                is_valid, err = validate_game(result)
+                if is_valid:
+                    break
+
+        if not is_valid:
+            raise ValueError(f"Grammar repair failed: {err[:100]}")
+
+        return result
+
+    def _generate_mutations(self, prefix: str, suffix: str) -> typing.List[str]:
+        raise NotImplementedError("MultiEditMutator uses mutate() directly")
+
+    def mutate(self, game: ArchiveGame,
+               mutation_selection_strategy: MutationSelectionStrategy,
+               mutation_strategy: MutationStrategy,
+               min_novelty: float = 0.10):
+        """Generate mutations via coordinated multi-edits with random design directions."""
+        directions = random.sample(_DESIGN_DIRECTIONS, min(self.num_return_sequences, len(_DESIGN_DIRECTIONS)))
+
+        async def _run():
+            tasks = [self._plan_and_apply_edits(game.game_str, d) for d in directions]
+            return await asyncio.gather(*tasks, return_exceptions=True)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                results = pool.submit(asyncio.run, _run()).result()
+        else:
+            results = asyncio.run(_run())
+
+        new_games = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"  MultiEdit [{directions[i][:30]}...]: {result}")
+                continue
+            dist = self._normalized_edit_distance(result, game.game_str)
+            if dist >= min_novelty:
+                new_games.append(result)
+
+        dummy_mutation = ("", "; ".join(d[:40] for d in directions), "", 0)
+        return new_games, dummy_mutation
+
+
 if _HAS_TORCH:
     class LLMMutator(BaseMutator):
         """Original mutator using a local HuggingFace causal LM with fill-in-the-middle."""
