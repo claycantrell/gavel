@@ -80,32 +80,62 @@ Example 3 — Reversi (placement + flip capture + scoring):
     )
 )
 
-Key Ludax conventions:
+Example 4 — Hex (connection game with set_forward and connected predicate):
+(game "Hex"
+    (players 2 (set_forward (P1 up) (P2 right)))
+    (equipment (board (hex_rectangle 11 11)) (pieces ("token" both)))
+    (rules
+        (play (repeat (P1 P2) (place "token" (destination (empty)))))
+        (end (if (>= (connected "token" ((edge forward) (edge backward))) 2) (mover win)))
+    )
+)
+
+Example 5 — English Draughts (movement + hop capture + promotion):
+(game "Draughts"
+    (players 2 (set_forward (P1 up) (P2 down)))
+    (equipment (board (square 8)) (pieces ("pawn" both) ("king" both)))
+    (rules
+        (start (place "pawn" P1 (40 42 44 46 49 51 53 55 56 58 60 62)) (place "pawn" P2 (1 3 5 7 8 10 12 14 17 19 21 23)))
+        (play (repeat (P1 P2) (move (or
+            (hop "pawn" direction:(forward_left forward_right) hop_over:opponent capture:true priority:0)
+            (step "pawn" direction:(forward_left forward_right) priority:1)
+            (hop "king" direction:diagonal hop_over:opponent capture:true priority:0)
+            (step "king" direction:diagonal priority:1))
+            (effects (promote "pawn" "king" (edge forward))
+                (if (and (action_was mover hop) (can_move_again hop)) (extra_turn mover same_piece:true))))))
+        (end (if (no_legal_actions) (mover win)))
+    )
+)
+
+Key Ludax syntax rules:
 - Top-level: (game "Name" (players N ...) (equipment ...) (rules ...))
-- Board types: (square N), (rectangle W H), (hexagon D), (hex_rectangle W H)
+- Boards: (square N), (rectangle W H), (hexagon D), (hex_rectangle W H)
 - Pieces: (pieces ("name" P1|P2|both) ...)
 - Movement: slide, hop, step (in move blocks); place (for placement)
 - Capture: (capture (custodial ...)), implicit via hop with capture:true
 - Effects: capture, promote, flip, extra_turn, set_score, increment_score
-- End conditions: (line "piece" N), (connected "piece" ...), (no_legal_actions), (full_board), (by_score), (captured_all "piece"), (exists MASK)
+- End conditions: (line "piece" N), (no_legal_actions), (full_board), (by_score), (captured_all "piece"), (exists MASK)
+- Connected predicate: (>= (connected "piece" ((mask1) (mask2))) 2) — NOTE: multi-mask uses DOUBLE parens ((mask1) (mask2))
+- Win/loss: (mover win), (mover lose), (opponent win), (draw)
 - Masks: (empty), (occupied mover|opponent), (edge forward|backward|...), (row N), (column N), (corners), (center), (and ...), (or ...), (not ...)
-- Play structure: (repeat (P1 P2) ...) or (once_through (P1 P2) ...)
-- Parentheses must balance.
+- Play: (repeat (P1 P2) ...) or (once_through (P1 P2) ...)
+- Parentheses must balance. Every ( needs a matching ).
 
 Your task: given a partial Ludax game with a section removed (marked <BLANK>), generate a replacement expression that fits syntactically and creates an interesting game. Output ONLY the replacement expression — no explanation, no markdown, no extra text."""
 
 LUDAX_AGENTIC_PROMPT = """You are an expert board game designer working with the Ludax game description language. You design novel, interesting games by modifying existing ones.
 
-Ludax key reference:
+Ludax syntax reference:
 - Boards: (square N), (rectangle W H), (hexagon D), (hex_rectangle W H)
 - Pieces: ("name" P1|P2|both) — defined in equipment
-- Movement types: slide (any distance), hop (jump over pieces), step (one cell), place (drop piece)
+- Movement: slide (any distance), hop (jump over), step (one cell), place (drop piece)
 - Directions: orthogonal, diagonal, any, forward, backward, forward_left, forward_right, up, down, left, right
-- Capture: (custodial "piece" N orientation:...), hop with capture:true
+- Capture: (capture (custodial "piece" N orientation:...)), hop with capture:true
 - Effects: capture, promote "from" "to" MASK, flip MASK, extra_turn, set_score, increment_score
-- End conditions: (line "piece" N), (connected "piece" MULTI_MASK), (no_legal_actions), (full_board), (by_score), (captured_all "piece"), (exists MASK)
-- Masks: (empty), (occupied mover|opponent), (edge forward|...), (row N), (column N), (corners), (and ...), (or ...), (not ...)
-- Predicates: (exists MASK), (full_board), (no_legal_actions), (line ...), (connected ...), comparison operators
+- End conditions: (line "piece" N), (no_legal_actions), (full_board), (by_score), (captured_all "piece"), (exists MASK)
+- Connected: (>= (connected "piece" ((mask1) (mask2))) 2) — NOTE double parens for multi-mask
+- Win/loss: (mover win), (mover lose), (opponent win), (draw)
+- Masks: (empty), (occupied mover|opponent), (edge forward|backward|...), (row N), (column N), (corners), (and ...), (or ...), (not ...)
 - Play: (repeat (P1 P2) ...) or (once_through (P1 P2) ...)
 
 Parentheses must balance. All games must be deterministic (no dice/randomness)."""
@@ -204,32 +234,56 @@ class AnthropicMutator(BaseMutator):
     """Mutator that calls the Anthropic Messages API with concurrent requests."""
 
     def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3,
-                 temperature: float = 1.0, use_ludax: bool = False):
+                 temperature: float = 1.0, use_ludax: bool = False, max_repair_attempts: int = 2):
         super().__init__(num_return_sequences)
         self.async_client = anthropic.AsyncAnthropic()
         self.model_name = model_name
         self.temperature = temperature
         self.system_prompt = LUDAX_SYSTEM_PROMPT if use_ludax else LUDII_SYSTEM_PROMPT
         self.dsl_name = "Ludax" if use_ludax else "Ludii"
+        self.use_ludax = use_ludax
+        self.max_repair_attempts = max_repair_attempts
+
+    def _strip_markdown(self, text: str) -> str:
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+        return text.replace("\n", " ")
 
     async def _call_api_async(self, prefix: str, suffix: str) -> str:
         user_prompt = f"Here is a {self.dsl_name} game with a section removed. Generate a replacement for <BLANK>.\n\n{prefix}<BLANK>{suffix}"
 
-        response = await self.async_client.messages.create(
-            model=self.model_name,
-            max_tokens=512,
-            temperature=self.temperature,
-            system=self.system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        messages = [{"role": "user", "content": user_prompt}]
 
-        output = response.content[0].text.strip()
-        if output.startswith("```"):
-            output = output.split("\n", 1)[1] if "\n" in output else output[3:]
-            if output.endswith("```"):
-                output = output[:-3]
-            output = output.strip()
-        output = output.replace("\n", " ")
+        response = await self.async_client.messages.create(
+            model=self.model_name, max_tokens=512, temperature=self.temperature,
+            system=self.system_prompt, messages=messages,
+        )
+        output = self._strip_markdown(response.content[0].text.strip())
+
+        # Self-repair loop: validate grammar, feed error back if invalid
+        if self.use_ludax:
+            from ludax_grammar import validate_game
+            for attempt in range(self.max_repair_attempts):
+                full_game = f"{prefix}{output}{suffix}".strip()
+                is_valid, err = validate_game(full_game)
+                if is_valid:
+                    break
+
+                # Feed the error back and ask for a fix
+                messages.append({"role": "assistant", "content": output})
+                messages.append({"role": "user", "content":
+                    f"That replacement produces a grammar error:\n{err[:300]}\n\n"
+                    f"Fix the syntax and output ONLY the corrected replacement expression."
+                })
+                response = await self.async_client.messages.create(
+                    model=self.model_name, max_tokens=512, temperature=0.3,
+                    system=self.system_prompt, messages=messages,
+                )
+                output = self._strip_markdown(response.content[0].text.strip())
+
         return output
 
     async def _generate_mutations_async(self, prefix: str, suffix: str) -> typing.List[str]:
@@ -280,7 +334,7 @@ class AgenticMutator(BaseMutator):
     """
 
     def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3,
-                 temperature: float = 1.0, use_ludax: bool = False):
+                 temperature: float = 1.0, use_ludax: bool = False, max_repair_attempts: int = 2):
         super().__init__(num_return_sequences)
         self.client = anthropic.Anthropic()
         self.async_client = anthropic.AsyncAnthropic()
@@ -288,6 +342,8 @@ class AgenticMutator(BaseMutator):
         self.temperature = temperature
         self.system_prompt = LUDAX_AGENTIC_PROMPT if use_ludax else AGENTIC_SYSTEM_PROMPT
         self.dsl_name = "Ludax" if use_ludax else "Ludii"
+        self.use_ludax = use_ludax
+        self.max_repair_attempts = max_repair_attempts
 
     async def _propose_critique_refine(self, prefix: str, original_section: str, suffix: str) -> str:
         """Single agentic mutation: propose → critique → refine."""
@@ -329,8 +385,8 @@ class AgenticMutator(BaseMutator):
 
         # Turn 3: Produce refined version
         messages.append({"role": "user", "content": (
-            "Based on your critique, produce the final refined replacement expression. "
-            "Output ONLY the Ludii expression — no explanation, no markdown."
+            f"Based on your critique, produce the final refined replacement expression. "
+            f"Output ONLY the {self.dsl_name} expression — no explanation, no markdown."
         )})
 
         response = await self.async_client.messages.create(
@@ -345,6 +401,32 @@ class AgenticMutator(BaseMutator):
                 output = output[:-3]
             output = output.strip()
         output = output.replace("\n", " ")
+
+        # Turn 4+ (optional): Grammar self-repair loop
+        if self.use_ludax:
+            from ludax_grammar import validate_game
+            for attempt in range(self.max_repair_attempts):
+                full_game = f"{prefix}{output}{suffix}".strip()
+                is_valid, err = validate_game(full_game)
+                if is_valid:
+                    break
+
+                messages.append({"role": "assistant", "content": output})
+                messages.append({"role": "user", "content":
+                    f"That produces a grammar error:\n{err[:300]}\n\n"
+                    f"Fix the syntax. Output ONLY the corrected replacement expression."
+                })
+                response = await self.async_client.messages.create(
+                    model=self.model_name, max_tokens=512, temperature=0.3,
+                    system=self.system_prompt, messages=messages,
+                )
+                output = response.content[0].text.strip()
+                if output.startswith("```"):
+                    output = output.split("\n", 1)[1] if "\n" in output else output[3:]
+                    if output.endswith("```"): output = output[:-3]
+                    output = output.strip()
+                output = output.replace("\n", " ")
+
         return output
 
     async def _generate_mutations_async(self, prefix: str, suffix: str,
