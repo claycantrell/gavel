@@ -69,7 +69,9 @@ def pick_target(game_str):
 
 # --- Load best game ---
 with open("exp_outputs/novel_games.json") as f:
-    all_games = json.load(f)
+    data = json.load(f)
+    # Support both old format (list) and new format (dict with manifest)
+    all_games = data["games"] if isinstance(data, dict) else data
 
 best = max(all_games, key=lambda g: g["fitness"])
 seed_name = best["concept"]["name"]

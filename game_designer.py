@@ -321,14 +321,14 @@ def generate_game(client: anthropic.Anthropic, concept: dict,
     return None  # All repairs failed
 
 
-def _design_single_game(i: int, archetype: tuple, model: str) -> typing.Optional[dict]:
+def _design_single_game(i: int, archetype: tuple, model: str, seed_words: typing.Optional[str] = None) -> typing.Optional[dict]:
     """Design a single game. Returns result dict or None. Thread-safe."""
     client = anthropic.Anthropic()
     t0 = time.time()
 
     # Step 1: Theme
     try:
-        concept = generate_theme(client, model)
+        concept = generate_theme(client, model, seed_words=seed_words)
     except Exception as e:
         log(f"Game {i+1}: THEME ERROR — {e}")
         return None
@@ -374,40 +374,55 @@ def _design_single_game(i: int, archetype: tuple, model: str) -> typing.Optional
     return {"concept": concept, "game_str": game_str, "fitness": fitness, "result": r}
 
 
-def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6", max_parallel: int = 5):
-    """Generate and evaluate novel games in parallel."""
+def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6", max_parallel: int = 5, seed: int = 42):
+    """Generate and evaluate novel games in parallel. Seed controls word selection and archetype order."""
     import concurrent.futures
 
-    log(f"=== NOVEL GAME DESIGNER ===")
+    rng = random.Random(seed)
+
+    log(f"=== NOVEL GAME DESIGNER (seed={seed}) ===")
     log(f"Generating {num_games} games with {model} ({max_parallel} parallel)\n")
 
-    # Shuffle archetypes so each game gets a different type
+    # Pre-generate all seed words deterministically
+    from wonderwords import RandomWord
+    rw = RandomWord()
+    all_seed_words = []
+    for _ in range(num_games):
+        adj = rw.word(include_categories=["adjective"])
+        n1 = rw.word(include_categories=["noun"])
+        n2 = rw.word(include_categories=["noun"])
+        all_seed_words.append(f"{adj} {n1}, {n2}")
+
+    # Shuffle archetypes deterministically
     shuffled_archetypes = GAME_ARCHETYPES.copy()
-    random.shuffle(shuffled_archetypes)
+    rng.shuffle(shuffled_archetypes)
+
+    # Log the run manifest for reproducibility
+    manifest = {"seed": seed, "model": model, "num_games": num_games, "games": []}
+    for i in range(num_games):
+        arch = shuffled_archetypes[i % len(shuffled_archetypes)]
+        manifest["games"].append({"index": i, "seed_words": all_seed_words[i], "archetype": arch[0]})
+    log(f"Archetypes: {[shuffled_archetypes[i % len(shuffled_archetypes)][0] for i in range(num_games)]}")
+    log(f"")
 
     results = []
+    all_outputs = []  # Save everything, even failures
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
         futures = {}
         for i in range(num_games):
             arch = shuffled_archetypes[i % len(shuffled_archetypes)]
-            f = executor.submit(_design_single_game, i, arch, model)
+            f = executor.submit(_design_single_game, i, arch, model, seed_words=all_seed_words[i])
             futures[f] = i
 
         for f in concurrent.futures.as_completed(futures):
             result = f.result()
+            all_outputs.append(result)
             if result is not None:
                 results.append(result)
 
-        results.append({
-            "concept": concept,
-            "game_str": game_str,
-            "fitness": fitness,
-            "result": r,
-        })
-
     # Show best games
     log(f"\n{'='*60}")
-    log(f"RESULTS: {len(results)}/{num_games} playable games")
+    log(f"RESULTS: {len(results)}/{num_games} playable games (seed={seed})")
     log(f"{'='*60}")
 
     results.sort(key=lambda x: x["fitness"], reverse=True)
@@ -415,7 +430,7 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6", max_para
         c = g["concept"]
         r = g["result"]
         log(f"\n{'─'*60}")
-        log(f"#{i+1}: \"{c['name']}\" (f={g['fitness']:.3f})")
+        log(f"#{i+1}: \"{c['name']}\" (f={g['fitness']:.3f}, arch={c.get('archetype','?')})")
         log(f"Theme: {c['theme']}")
         log(f"Twist: {c['twist']}")
         log(f"Balance={r['balance']:.2f} Completion={r['completion']:.2f} Turns={r['mean_turns']:.0f} Wins={r['wins']}")
@@ -425,11 +440,15 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6", max_para
             game = game.replace(kw, "\n    " + kw)
         log(game)
 
-    # Save all results
+    # Save all results + manifest
     save_path = "exp_outputs/novel_games.json"
+    manifest["playable"] = len(results)
+    manifest["total"] = num_games
     with open(save_path, "w") as f:
-        json.dump([{"concept": g["concept"], "game_str": g["game_str"],
-                     "fitness": g["fitness"]} for g in results], f, indent=2)
+        json.dump({"manifest": manifest, "games": [
+            {"concept": g["concept"], "game_str": g["game_str"], "fitness": g["fitness"]}
+            for g in results
+        ]}, f, indent=2)
     log(f"\nSaved to {save_path}")
 
     return results
@@ -439,4 +458,5 @@ if __name__ == "__main__":
     import sys
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 10
     model = sys.argv[2] if len(sys.argv) > 2 else "claude-sonnet-4-6"
-    design_games(num_games=n, model=model)
+    seed = int(sys.argv[3]) if len(sys.argv) > 3 else 42
+    design_games(num_games=n, model=model, seed=seed)
