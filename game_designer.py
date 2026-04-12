@@ -205,31 +205,69 @@ def _pick_archetype(client: anthropic.Anthropic, concept: dict, model: str) -> t
     return random.choice(GAME_ARCHETYPES)
 
 
+RULES_PROMPT = """You are a board game designer. Write clear, specific rules for a board game.
+
+Rules must be:
+1. Playable on a grid board (square, hex, or rectangle) with simple pieces
+2. Fully deterministic — no dice, cards, hidden info, or random events
+3. Every piece type you name must have a clear purpose and be used in the rules
+4. Placement or movement rules must be unambiguous (where can you place? how do pieces move?)
+5. Effects must be precisely triggered (what EXACTLY causes a capture/flip/promotion?)
+6. Win condition must be clearly stated and achievable
+
+Format your rules as:
+BOARD: (shape and size)
+PIECES: (list each piece type, who owns it, and what it does)
+SETUP: (where pieces start, if any)
+ON YOUR TURN: (exactly what a player does)
+EFFECTS: (what happens after a move — be specific about triggers)
+HOW TO WIN: (end condition)
+
+Be specific. "Capture nearby pieces" is bad. "When you place a stone so that exactly one opponent stone is directly between your new stone and another of your stones in a straight orthogonal line, that opponent stone is removed" is good."""
+
+
 def generate_game(client: anthropic.Anthropic, concept: dict,
                   model: str = "claude-sonnet-4-6", max_repairs: int = 3,
                   forced_archetype: typing.Optional[typing.Tuple] = None) -> typing.Optional[str]:
-    """Generate a complete Ludax game from a concept. Returns game string or None."""
+    """Generate a complete Ludax game from a concept via two-step: rules then code."""
     if forced_archetype:
         arch_name, arch_desc, arch_example = forced_archetype
     else:
         arch_name, arch_desc, arch_example = _pick_archetype(client, concept, model)
     concept["archetype"] = arch_name
 
-    brief = (
+    # Step 1: Write rules in plain English
+    rules_brief = (
         f"Theme: {concept['theme']}\n"
-        f"Twist: {concept['twist']}\n\n"
-        f"Archetype: {arch_name} — {arch_desc}\n"
-        f"Reference example (use as SYNTAX GUIDE only, do NOT copy):\n{arch_example}\n\n"
+        f"Twist: {concept['twist']}\n"
         f"Game name: \"{concept['name']}\"\n"
         f"Board: {concept['board']}\n"
-        f"Win condition: {concept['win_condition']}\n\n"
-        f"Design a complete Ludax game that brings this theme to life. Transform the archetype — don't clone it."
+        f"Win condition: {concept['win_condition']}\n"
+        f"Archetype: {arch_name} — {arch_desc}\n\n"
+        f"Write the complete rules for this game."
     )
 
-    messages = [{"role": "user", "content": brief}]
+    rules_resp = client.messages.create(
+        model=model, max_tokens=512, temperature=0.7,
+        system=RULES_PROMPT, messages=[{"role": "user", "content": rules_brief}],
+    )
+    rules_text = rules_resp.content[0].text.strip()
+    concept["rules_text"] = rules_text
+
+    # Step 2: Translate rules to Ludax code
+    translate_brief = (
+        f"Translate these board game rules into a valid Ludax game:\n\n"
+        f"{rules_text}\n\n"
+        f"Reference example for the {arch_name} archetype (SYNTAX GUIDE only):\n{arch_example}\n\n"
+        f"IMPORTANT: Only use piece types that are mentioned in the rules above. "
+        f"Every piece in equipment must be used in the play/effects/end sections. "
+        f"Do not add extra piece types."
+    )
+
+    messages = [{"role": "user", "content": translate_brief}]
 
     resp = client.messages.create(
-        model=model, max_tokens=1024, temperature=0.7,
+        model=model, max_tokens=1024, temperature=0.5,
         system=GAME_PROMPT, messages=messages,
     )
     output = resp.content[0].text.strip()
@@ -304,6 +342,12 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
             continue
 
         log(f"  Archetype: {concept.get('archetype', '?')}")
+        if concept.get("rules_text"):
+            # Show just the key lines
+            for line in concept["rules_text"].split("\n"):
+                line = line.strip()
+                if line and any(line.startswith(k) for k in ["BOARD:", "PIECES:", "ON YOUR TURN:", "EFFECTS:", "HOW TO WIN:"]):
+                    log(f"  {line[:80]}")
 
         # Step 3: Evaluate
         try:
