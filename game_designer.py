@@ -244,6 +244,10 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
         mf = r.get("mechanic_frequency", 1.0)
         if mf < 0.05 and r.get("score_volatility", 0) > 0:
             fitness = round(fitness * 0.3, 3)
+        # Penalize games where decisions don't matter
+        ov = r.get("outcome_variance", 10)
+        if ov < 5:
+            fitness = round(fitness * 0.3, 3)
 
         elapsed = time.time() - t0
         log(f"  PLAYABLE! f={fitness:.3f} bal={r['balance']:.2f} comp={r['completion']:.2f} turns={r['mean_turns']:.0f} ({elapsed:.0f}s)")

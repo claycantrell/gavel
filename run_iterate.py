@@ -41,10 +41,15 @@ def fitness(r):
     # If the game has effects that never fire (<5% of turns), apply penalty
     # Otherwise fitness is purely balance * completion * decisions
     base = round((b * c * d) ** (1/3), 3)
+    # Penalize dead mechanics
     mf = r.get("mechanic_frequency", 1.0)
     if mf < 0.05 and r.get("score_volatility", 0) > 0:
-        # Game has scoring/effects but they're inactive — penalize
-        return round(base * 0.3, 3)
+        base = round(base * 0.3, 3)
+    # Penalize games where decisions don't matter (outcome variance too low)
+    # Reversi ~17, good games ~7+, boring games <4
+    ov = r.get("outcome_variance", 10)
+    if ov < 5:
+        base = round(base * 0.3, 3)
     return base
 
 

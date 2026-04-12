@@ -44,7 +44,10 @@ def fitness(r):
     base = round((b * c * d) ** (1/3), 3)
     mf = r.get("mechanic_frequency", 1.0)
     if mf < 0.05 and r.get("score_volatility", 0) > 0:
-        return round(base * 0.3, 3)
+        base = round(base * 0.3, 3)
+    ov = r.get("outcome_variance", 10)
+    if ov < 5:
+        base = round(base * 0.3, 3)
     return base
 
 

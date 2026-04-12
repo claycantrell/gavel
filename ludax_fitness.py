@@ -273,6 +273,19 @@ def evaluate_game(game_str: str,
 
             # Game length variance (replayability)
             evaluation["turns_std"] = float(t_turns[mask].std())
+
+            # Outcome variance: how much does the final score differ across games?
+            # Low = every game ends the same (decisions don't matter)
+            # High = different play leads to different outcomes (decisions matter)
+            final_diffs = []
+            for gi in range(len(t_turns)):
+                if mask[gi]:
+                    t = min(int(t_turns[gi]) - 1, MAX_GAME_STEPS - 1)
+                    final_diffs.append(t_step_data[gi, t, 0] - t_step_data[gi, t, 1])
+            if final_diffs:
+                evaluation["outcome_variance"] = float(np.std(final_diffs))
+            else:
+                evaluation["outcome_variance"] = 0
         else:
             evaluation["lead_changes"] = 0
             evaluation["score_volatility"] = 0
