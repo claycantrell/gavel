@@ -23,7 +23,7 @@ from archives import MAPElitesArchive, SelectedConceptArchive, ConceptPCAArchive
 from config import ArchiveGame, MutationSelectionStrategy, EliteSelectionStrategy, MutationStrategy, FitnessEvaluationStrategy, VALIDATION_GAMES
 from fitness_helpers import _get_fast_evaluation, _close_fast_evaluation, _evaluate_fitness, _compute_balance, _compute_drawishness, FITNESS_METRIC_KEYS, UNCOMPILABLE_FITNESS
 from java_helpers import SYNTACTIC_BEHAVIORAL_CHARACTERISTICS, SEMANTIC_BEHAVIORAL_CHARACTERISTICS
-from mutators import LLMMutator
+from mutators import LLMMutator, AnthropicMutator
 from utils import gpu_utilization, spin_gpu
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -31,9 +31,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 ORGANIZATION = "LudiiLMs/"
 class MAPElitesSearch():
     def __init__(self,
-                 model: AutoModelForCausalLM,
-                 tokenizer: AutoTokenizer,
-                 config: GenerationConfig,
+                 mutator,
                  archive: MAPElitesArchive,
                  num_selections: int,
                  elite_selection_strategy: EliteSelectionStrategy,
@@ -49,15 +47,15 @@ class MAPElitesSearch():
                  num_threads: int = 16,
                  save_dir: str = "./exp_outputs/map-elites-test",
                  verbose: bool = False):
-        
+
         self.num_threads = num_threads
         self.save_dir = save_dir
         self.verbose = verbose
         self.spin_gpu = spin_gpu
 
         # Initialize mutator
-        if self.verbose: print("Initializing LLM mutator...")
-        self.mutator = LLMMutator(model, tokenizer, config)
+        if self.verbose: print("Initializing mutator...")
+        self.mutator = mutator
         self.mutation_selection_strategy = mutation_selection_strategy
         self.mutation_strategy = mutation_strategy
 
@@ -360,6 +358,8 @@ class MAPElitesSearch():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default="LudiiLMs/code-llama-13b-fitm-mask", help="Name of the model to load")
+    parser.add_argument('--use_anthropic', action='store_true', help="Use Anthropic API instead of local HuggingFace model")
+    parser.add_argument('--anthropic_model', type=str, default="claude-opus-4-6", help="Anthropic model to use (e.g. claude-opus-4-6, claude-sonnet-4-6)")
     parser.add_argument('--verbose', action='store_true', help="Whether to print verbose output")
     parser.add_argument('--spin_gpu', action='store_true', help="Whether to spin the GPU during evaluation")
 
@@ -433,20 +433,27 @@ if __name__ == '__main__':
     # Set the random seed
     set_seed(args.seed)
 
-    # Load the model and tokenizer
-    model = AutoModelForCausalLM.from_pretrained(args.model_name)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-
-    config = GenerationConfig(
-        temperature=args.mutation_temperature,
-        num_beams=args.mutation_beam_size,
-        num_beam_groups=args.mutation_beam_size,
-        diversity_penalty=args.mutation_diversity_penalty,
-
-        do_sample=True,
-        num_return_sequences=args.num_mutations,
-        renormalize_logits=True,
-    )
+    # Create the mutator (Anthropic API or local HuggingFace)
+    if args.use_anthropic:
+        print(f"Using Anthropic API with model: {args.anthropic_model}")
+        mutator = AnthropicMutator(
+            model_name=args.anthropic_model,
+            num_return_sequences=args.num_mutations,
+            temperature=args.mutation_temperature,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(args.model_name)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+        config = GenerationConfig(
+            temperature=args.mutation_temperature,
+            num_beams=args.mutation_beam_size,
+            num_beam_groups=args.mutation_beam_size,
+            diversity_penalty=args.mutation_diversity_penalty,
+            do_sample=True,
+            num_return_sequences=args.num_mutations,
+            renormalize_logits=True,
+        )
+        mutator = LLMMutator(model, tokenizer, config)
 
     # Create the archive
     if args.archive_type == "selected_concept":
@@ -493,9 +500,7 @@ if __name__ == '__main__':
         raise ValueError(f"Fitness aggregator {args.fitness_aggregator} not recognized")
 
     map_elites = MAPElitesSearch(
-        model=model,
-        tokenizer=tokenizer,
-        config=config,
+        mutator=mutator,
         archive=archive,
         num_selections=args.num_selections,
         elite_selection_strategy=args.elite_selection_strategy, 
@@ -533,8 +538,9 @@ if __name__ == '__main__':
 
         initial_game_strs = []
         initial_game_names = []
+        dataset_name = args.model_name + "-base-data" if not args.use_anthropic else "LudiiLMs/code-llama-13b-fitm-mask-heldout-1-epoch-base-data"
         for split in splits:
-            dataset = load_dataset(args.model_name + "-base-data", split=split)
+            dataset = load_dataset(dataset_name, split=split)
             initial_game_strs += dataset['base_game']
             initial_game_names += dataset['name']
 
