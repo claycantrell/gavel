@@ -230,18 +230,37 @@ def evaluate_game(game_str: str,
         # Only analyze completed games
         mask = t_terminated
         if mask.sum() > 0:
-            # Lead changes: count sign flips of (p1_score - p2_score)
             score_diffs = t_step_data[mask, :, 0] - t_step_data[mask, :, 1]  # (N_completed, MAX_STEPS)
-            lead_signs = np.sign(score_diffs)
-            # Shift and compare to find sign changes (ignoring 0s)
-            sign_changes = np.abs(np.diff(lead_signs, axis=1))
-            # A change from +1 to -1 is 2, from +1 to 0 or 0 to -1 is 1
-            lead_changes_per_game = (sign_changes > 0).sum(axis=1)
-            evaluation["lead_changes"] = float(lead_changes_per_game.mean())
 
-            # Score trajectory variance (how bumpy is each game?)
-            score_abs_diffs = np.abs(np.diff(score_diffs, axis=1))
-            evaluation["score_volatility"] = float(score_abs_diffs.mean())
+            # Lead changes: only count when score difference crosses a threshold
+            # A +1/-1 micro-oscillation from normal placement isn't drama.
+            # Use 10% of board size as the threshold for a "real" lead change.
+            lead_threshold = max(env.board_size * 0.1, 2.0)
+            # Quantize score diffs: who's "really" ahead?
+            quantized_lead = np.where(score_diffs > lead_threshold, 1,
+                             np.where(score_diffs < -lead_threshold, -1, 0))
+            lead_flips = np.abs(np.diff(quantized_lead, axis=1))
+            # A real lead change is going from +1 to -1 (magnitude 2)
+            real_lead_changes = (lead_flips == 2).sum(axis=1)
+            evaluation["lead_changes"] = float(real_lead_changes.mean())
+
+            # Score volatility: measure large per-turn swings, not micro-changes
+            # A swing of 1 (normal placement) is noise. A swing of 3+ (capture/flip) is signal.
+            per_step_swings = np.abs(np.diff(score_diffs, axis=1))
+            # Only count swings larger than 1 (more than a single placement)
+            significant_swings = per_step_swings[per_step_swings > 1.5]
+            if len(significant_swings) > 0:
+                evaluation["score_volatility"] = float(significant_swings.mean())
+            else:
+                evaluation["score_volatility"] = 0.0
+
+            # Mechanic frequency: what fraction of turns have a significant swing?
+            # This distinguishes "frequent small drama" (Reversi) from "rare huge spike"
+            active_steps = per_step_swings[t_step_data[mask, :-1, 3] == 0]  # only pre-game-end steps
+            if len(active_steps) > 0:
+                evaluation["mechanic_frequency"] = float((active_steps > 1.5).mean())
+            else:
+                evaluation["mechanic_frequency"] = 0.0
 
             # Decision diversity: average number of legal moves per turn
             n_legal = t_step_data[mask, :, 2]  # (N_completed, MAX_STEPS)

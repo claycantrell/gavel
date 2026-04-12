@@ -37,11 +37,12 @@ def fitness(r):
     b = max(r["balance"], 0.01)
     c = max(r["completion"], 0.01)
     d = max(r["decision_moves"], 0.01)
-    # Engagement: reward score volatility (active mechanics) and turn variance (replayability)
-    # Normalize volatility: Reversi ~1.0, dead game ~0.0, cap at 1.0
-    v = min(max(r.get("score_volatility", 0), 0.01), 1.0)
-    # Combine: balance * completion * decisions * engagement
-    return round((b * c * d * v) ** 0.25, 3)
+    # Engagement: reward frequent mechanic activation (not just rare big spikes)
+    # mechanic_frequency = fraction of turns with significant score swings
+    # Reversi ~0.3 (30% of turns have flips), dead game ~0.0
+    mf = max(r.get("mechanic_frequency", 0), 0.01)
+    # Combine: balance * completion * decisions * mechanic_frequency
+    return round((b * c * d * mf) ** 0.25, 3)
 
 
 def pick_target(game_str):
