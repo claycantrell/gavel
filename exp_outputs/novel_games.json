@@ -1,0 +1,106 @@
+[
+  {
+    "concept": {
+      "name": "Woven Echoes",
+      "theme": "Ancient weavers compete to reconstruct a lost tapestry whose pattern exists only in fragments of collective memory. Each player commands a guild of thread-spirits who lay down strands of color across a loom-grid, but the true pattern is revealed only as threads overlap and interlock. The stakes are legacy itself \u2014 whoever completes the most resonant echo of the original design claims the title of Master Weaver and preserves the pattern for all time.",
+      "board": "hex_rectangle 7 7",
+      "win_condition": "The game ends when all hexes are covered by at least one thread-strand. Players score by counting contiguous regions of their color that form closed loops (fully enclosed rings of hexes). The player with the most closed loops, plus one bonus point per hex in their largest loop, wins.",
+      "twist": "Retrospective Weaving \u2014 when a player places a new strand piece on a hex already occupied by an opponent's piece, instead of capturing it, both pieces remain and the hex becomes a 'crossed thread.' A crossed-thread hex counts toward the loop-closure of whichever player most recently contributed to encircling it, forcing players to strategically revisit and reframe past moves rather than simply block. A loop completed around at least two crossed-thread hexes scores double, rewarding players who weave through contested history rather than avoiding it.",
+      "seed_words": "determined lyocell, retrospective",
+      "archetype": "flip_territory"
+    },
+    "game_str": "(game \"Woven Echoes\"     (players 2)     (equipment         (board (hex_rectangle 7 7))         (pieces             (\"strand\" both)             (\"crossed\" both)         )     )     (rules         (start             (place \"strand\" P1 (0 1 2 3))             (place \"strand\" P2 (45 46 47 48))         )         (play             (repeat (P1 P2)                 (place \"strand\"                     (destination (or (empty) (occupied opponent)))                     (effects                         (flip (occupied opponent))                         (promote \"strand\" \"crossed\" (and (occupied mover) (adjacent (occupied opponent) direction:any)))                         (set_score mover (count (occupied mover)))                         (set_score opponent (count (occupied opponent)))                     )                 )                 (force_pass)             )         )         (end             (if (passed both) (by_score))             (if (full_board) (by_score))         )     ) )",
+    "fitness": 0.977
+  },
+  {
+    "concept": {
+      "name": "Ember Covenant",
+      "theme": "Ancient monks have tended the Sacred Flame atop a volcanic plateau for centuries, but the ritual has become hollow \u2014 a mindless routine of devotion to a cold altar. Now rival orders compete to reignite the flame by placing consecrated stones in ritual patterns. The order that completes the most sacred formations wins the right to relight the altar and restore meaning to the covenant.",
+      "board": "hexagon 9",
+      "win_condition": "The game ends when no legal placement remains. Players count completed 'flame rings' \u2014 closed loops of their own stones fully surrounding at least one empty hex. The player with the most flame rings wins. Ties are broken by the total number of interior empty hexes enclosed.",
+      "twist": "Brandy Hexes: Six special hexes are marked on the board in a radial pattern equidistant from the center. Any stone placed on a Brandy Hex immediately 'ignites' \u2014 it counts as belonging to both players simultaneously for the purpose of completing flame rings. This means a ring can be completed using shared ignited stones, but both players score it. Controlling ignited hexes is powerful but dangerous, as your opponent benefits equally from any ring you build through them.",
+      "seed_words": "mindless altar, brandy",
+      "archetype": "race"
+    },
+    "game_str": "(game \"Ember Covenant\"     (players 2)     (equipment         (board (hexagon 9))         (pieces             (\"ember\" both)             (\"ignited\" both)         )     )     (rules         (play             (repeat (P1 P2)                 (place \"ember\"                     (destination (empty))                     (effects                         (increment_score mover (count (and (occupied mover) (adjacent (empty) direction:orthogonal))))                         (increment_score opponent (count (and (occupied opponent) (adjacent (empty) direction:orthogonal))))                     )                 )             )         )         (end             (if (full_board) (by_score))             (if (no_legal_actions) (by_score))         )     ) )",
+    "fitness": 0.928
+  },
+  {
+    "concept": {
+      "name": "Celestial Breath",
+      "theme": "You are a composer of sacred music, coaxing melodies upward through the heavens. Each note placed on the board represents a breath of wind through a celestial clarinet. The player whose musical phrase ascends highest \u2014 reaching the divine center of the heavenly vault \u2014 earns eternal resonance and wins.",
+      "board": "hexagon 9",
+      "win_condition": "The game ends when a player occupies the central hex with an unbroken chain of their own pieces connecting back to their home edge. This 'ascending phrase' must pass through at least one hex in each of the three concentric rings of the hexagon, representing the three tiers of heaven.",
+      "twist": "Every hex on the board is assigned a 'breath value' based on its ring distance from the center (outer ring = 1, middle ring = 2, inner ring = 3, center = 5). When a player places a piece adjacent to two or more of their own pieces, those connected pieces 'resonate' and each gains one additional breath value permanently marked on them. However, if an opponent places a piece that breaks your chain (sits between two of your pieces with no alternate path), all resonance bonuses along that broken segment are lost and those pieces revert to base ring values. Players must balance bold ascension with protecting their melodic line.",
+      "seed_words": "labored clarinet, heaven",
+      "archetype": "connection"
+    },
+    "game_str": "(game \"Celestial Breath\"     (players 2 (set_forward (P1 up) (P2 down)))     (equipment         (board (hexagon 9))         (pieces (\"note\" both) (\"chord\" both))     )     (rules         (play             (repeat (P1 P2)                 (place \"note\"                     (destination (empty))                     (effects                         (capture (and (occupied opponent) (custodial \"note\" 1 orientation:any)))                     )                 )             )         )         (end             (if (>= (connected \"note\" ((edge forward) (edge backward))) 2) (mover win))             (if (no_legal_actions) (mover lose))         )     ) )",
+    "fitness": 0.293
+  },
+  {
+    "concept": {
+      "name": "Gilded Divide",
+      "theme": "In the glittering city of Aurumis, two rival aristocratic factions vie for dominance of the grand boulevard. The Crimson Elite and the Ivory Circle each erect lavish estates and social clubs, but the city is fracturing \u2014 the more one side flaunts its wealth, the more the other is pushed to the margins. Players must expand their influence while managing the dangerous polarization of the city, because a city torn completely apart collapses, and neither side wins.",
+      "board": "rectangle 6 8",
+      "win_condition": "The game ends when one player occupies a continuous chain of pieces connecting opposite short edges of the board (left to right), OR when the board reaches full polarization \u2014 every row contains pieces of only one color \u2014 in which case neither player wins and the wealthiest scorer (most connected clusters) claims a hollow victory. A true win requires connection before total polarization occurs.",
+      "twist": "Each column on the board is a 'social stratum.' When a player places a piece, all friendly pieces in that same column gain +1 prestige (tracked by flipping pieces to a gold side). However, any column where one player holds 3 or more prestige pieces immediately repels the opponent \u2014 the opponent cannot place in that column until they place two pieces in adjacent columns first, simulating how extreme wealth concentration in one district locks out rivals, but only by forcing costly detours.",
+      "seed_words": "ritzy trouble, polarization",
+      "archetype": "elimination"
+    },
+    "game_str": "(game \"Gilded Divide\"     (players 2 (set_forward (P1 up) (P2 down)))     (equipment         (board (rectangle 6 8))         (pieces             (\"estate\" both)             (\"prestige\" both)         )     )     (rules         (start             (place \"estate\" P1 (0 1 2 3 4 5))             (place \"estate\" P2 (42 43 44 45 46 47))         )         (play             (repeat (P1 P2)                 (move                     (or                         (hop \"estate\" direction:orthogonal hop_over:opponent capture:true priority:0)                         (hop \"estate\" direction:diagonal hop_over:opponent capture:true priority:0)                         (step \"estate\" direction:orthogonal priority:1)                         (step \"estate\" direction:diagonal priority:1)                     )                     (effects                         (flip (and (occupied mover) (adjacent (occupied mover) direction:orthogonal)))                     )                 )             )         )         (end             (if (>= (connected \"estate\" ((edge left) (edge right))) 2) (mover win))             (if (no_legal_actions) (mover lose))         )     ) )",
+    "fitness": 0.271
+  },
+  {
+    "concept": {
+      "name": "Hollow Chorus",
+      "theme": "Deep beneath a dying forest, ancient spore-singers tend their fungal broods in a network of underground chambers. The spore-singers have lost their voices \u2014 struck silent by a creeping blight \u2014 and must now grow their colonies through silent gestures alone, expanding mycelia to claim the resonant nodes of the cavern before their rivals do. The first colony to fully surround the heart-chamber wins the right to sing again.",
+      "board": "hexagon 9",
+      "win_condition": "The game ends when a player's pieces completely encircle the central hex node of the board, forming an unbroken ring of their own color around it. If neither player achieves this, the game ends when no legal moves remain and the player controlling the most resonant nodes (marked hexes) wins.",
+      "twist": "Incubation Burst \u2014 any group of three or more of your pieces that share a continuous chain AND are each adjacent to at least one empty hex can collectively 'pulse,' flipping all opponent pieces immediately surrounding any one piece in that chain to your color. However, after a pulse, every piece that was part of the triggering chain becomes dormant (marked with a token) and cannot pulse again until an opponent places a piece adjacent to any dormant piece, which reawakens the entire chain. Dormant pieces still count for encirclement and scoring.",
+      "seed_words": "ragged incubation, laryngitis",
+      "archetype": "score_race"
+    },
+    "game_str": "(game \"Hollow Chorus\"     (players 2)     (equipment         (board (hexagon 9))         (pieces             (\"spore\" both)             (\"node\" both)         )     )     (rules         (play             (repeat (P1 P2)                 (place \"spore\"                     (destination (empty))                     (effects                         (flip (custodial \"spore\" 1 orientation:any))                         (increment_score mover (count (occupied mover)))                     )                 )             )         )         (end             (if (>= (score mover) 45) (mover win))             (if (no_legal_actions) (mover win))             (if (full_board) (by_score))         )     ) )",
+    "fitness": 0.123
+  },
+  {
+    "concept": {
+      "name": "Buried Signal",
+      "theme": "Deep beneath an ancient city, rival archaeologists race to uncover a network of buried relay stones \u2014 remnants of a lost civilization's communication grid. Each dig site reveals connections to others, and whoever reconstructs the longest unbroken signal path claims the discovery of the century. But the ground is finite, and every stone you place is a cue to your opponent about where the network runs next.",
+      "board": "hex_rectangle 7 7",
+      "win_condition": "The game ends when all hexes are occupied. The player who controls the longest unbroken chain of their own relay stones \u2014 orthogonally connected through adjacent hexes \u2014 wins. Ties are broken by the player with the most chains of length 3 or more.",
+      "twist": "Excavation Echo: When a player places a stone on any hex that is surrounded on exactly 3 sides by already-occupied hexes, that placement immediately 'resonates' \u2014 the player must also place a second stone of their color on any currently empty hex that shares an edge with one of those 3 occupied neighbors. This bonus placement cannot itself trigger another resonance, but it forces both players to constantly read the board geometry to either engineer or deny cascading extensions of their signal path.",
+      "seed_words": "fascinated trowel, cue",
+      "archetype": "elimination"
+    },
+    "game_str": "(game \"Buried Signal\"     (players 2)     (equipment         (board (hex_rectangle 7 7))         (pieces (\"relay\" both))     )     (rules         (play             (repeat (P1 P2)                 (place \"relay\"                     (destination (empty))                     (effects                         (if                             (exists (and (occupied mover) (adjacent (occupied opponent) direction:orthogonal)))                             (extra_turn mover same_piece:true)                         )                     )                 )             )         )         (end             (if (full_board) (by_score))         )     ) )",
+    "fitness": 0.064
+  },
+  {
+    "concept": {
+      "name": "Iron Skies",
+      "theme": "The age of ironclad airships has dawned, and two rival pilot factions race to claim dominion over contested sky-lanes. Each player commands a fleet of armored vessels navigating treacherous aerial corridors. Control the skies or be blasted from them \u2014 only one faction's banner will fly over the capital.",
+      "board": "hex_rectangle 7 7",
+      "win_condition": "A player wins by occupying all six 'sky-lane' hexes along the central column of the board simultaneously, or by reducing the opponent to zero mobile pieces.",
+      "twist": "Every ironclad piece has a 'facing' \u2014 it points toward one of the six hex directions when placed or moved. A piece can only capture an enemy in its facing direction, but it is vulnerable to capture from any of the three hexes directly behind it. Rotating a piece counts as a full turn move, forcing players to think several moves ahead about orientation. Additionally, any friendly piece that moves into the 'slipstream' \u2014 the two hexes directly behind an allied ironclad \u2014 gains a free bonus move that turn, chaining potential fleet maneuvers.",
+      "seed_words": "direful pilot, ironclad",
+      "archetype": "territory"
+    },
+    "game_str": "(game \"Iron Skies\"     (players 2 (set_forward (P1 up) (P2 down)))     (equipment         (board (hex_rectangle 7 7))         (pieces             (\"ironclad\" both)             (\"flagship\" both)         )     )     (rules         (start             (place \"ironclad\" P1 (0 1 2 3 4 5 6))             (place \"flagship\" P1 (7 8 9))             (place \"ironclad\" P2 (42 43 44 45 46 47 48))             (place \"flagship\" P2 (38 39 40))         )         (play             (repeat (P1 P2)                 (move                     (or                         (step \"ironclad\" direction:forward)                         (step \"ironclad\" direction:forward_left)                         (step \"ironclad\" direction:forward_right)                         (step \"flagship\" direction:forward)                         (step \"flagship\" direction:forward_left)                         (step \"flagship\" direction:forward_right)                         (step \"flagship\" direction:orthogonal)                     )                     (effects                         (capture (and (occupied opponent) (adjacent (occupied mover) direction:forward)))                         (set_score mover (count (occupied mover)))                         (set_score opponent (count (occupied opponent)))                     )                 )             )         )         (end             (if (no_legal_actions) (mover lose))             (if (full_board) (by_score))         )     ) )",
+    "fitness": 0.01
+  },
+  {
+    "concept": {
+      "name": "Drift Wardens",
+      "theme": "A great blizzard has buried the mountain passes, and rival factions of snowplow operators race to clear routes through the drifts. Each player commands a fleet of plows, methodically carving paths across the frozen terrain. The faction that opens the most vital crossroads and claims the high-ground observation posts wins dominion over the winter roads.",
+      "board": "hex_rectangle 7 7",
+      "win_condition": "The game ends when all 12 designated Observation Post hexes (pre-marked corners and center clusters) have been claimed. The player who controls the most Observation Posts wins. Ties are broken by the length of the longest continuous cleared road-chain.",
+      "twist": "Each plow piece occupies a hex and has a facing direction (one of the 6 hex sides). When a plow moves forward into an adjacent hex, it 'clears' the hex \u2014 flipping any Snow tiles there to Road tiles, which permanently block opponent plows from re-covering them. However, a plow can only move in its current facing direction unless it is adjacent to an Observation Post hex, where it may pivot freely. This creates a momentum mechanic: plows are hard to redirect mid-field, so players must plan routes in advance, and controlling Observation Posts grants the rare ability to reorient \u2014 making those hexes doubly strategic as both scoring targets and maneuvering pivots.",
+      "seed_words": "observant snowplow, motivation",
+      "archetype": "promotion_race"
+    },
+    "game_str": "(game \"Drift Wardens\"     (players 2 (set_forward (P1 up) (P2 down)))     (equipment         (board (hex_rectangle 7 7))         (pieces             (\"plow\" both)             (\"post\" both)             (\"snow\" both)             (\"road\" both)         )     )     (rules         (start             (place \"snow\" P1 (7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))             (place \"plow\" P1 (0 1 2 3 4 5 6))             (place \"plow\" P2 (42 43 44 45 46 47 48))         )         (play             (repeat (P1 P2)                 (move                     (or                         (step \"plow\" direction:forward priority:1)                         (step \"plow\" direction:forward_left priority:2)                         (step \"plow\" direction:forward_right priority:2)                         (step \"post\" direction:any priority:1)                     )                     (effects                         (capture (and (occupied opponent) (not (or (row 0) (row 6)))))                         (promote \"plow\" \"post\" (or (corners) (center)))                         (flip (and (occupied opponent) (adjacent (empty) direction:orthogonal)))                         (increment_score mover (count (occupied mover)))                     )                 )                 (force_pass)             )         )         (end             (if (no_legal_actions) (mover lose))             (if (full_board) (by_score))         )     ) )",
+    "fitness": 0.01
+  }
+]
