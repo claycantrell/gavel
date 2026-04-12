@@ -55,59 +55,77 @@ Output ONLY the JSON. No markdown fences."""
 
 GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept, output a complete, valid Ludax game.
 
-=== LUDAX STRUCTURE ===
+=== GAME SKELETON ===
 (game "Name"
     (players 2 (set_forward (P1 up) (P2 down))?)
-    (equipment
-        (board (BOARD_TYPE))
-        (pieces ("name" P1|P2|both) ...)
-    )
-    (rules
-        (start (place "piece" PLAYER (INDICES))...)?
-        (play
-            (repeat (P1 P2)
-                ;; PLACEMENT: (place "piece" (destination MASK) (result PRED)? (effects ...)?)
-                ;; MOVEMENT: (move (or (step/slide/hop ...) ...) (effects ...)?)
-            )
-        )
-        (end
-            (if PREDICATE (mover win|lose))
-            ...
-        )
-    )
+    (equipment (board BOARD) (pieces PIECE_DEFS))
+    (rules (start ...)? (play PLAY_BLOCK) (end END_CONDITIONS))
 )
 
-=== KEY SYNTAX ===
-- Effects go INSIDE (place ...) or (move ...): (effects (capture ...) (promote ...) (flip ...) (set_score ...) (extra_turn ...))
-- Capture (remove pieces): (capture (custodial "piece" 1 orientation:orthogonal|diagonal|any))
-- Flip (change ownership): (flip (custodial "piece" any))
-- Promote (upgrade pieces): (promote "pawn" "king" (edge forward))
-- Extra turn: (extra_turn mover same_piece:true)
-- Scoring: (set_score mover (count (occupied mover)))
-- Line win: (if (line "piece" N) (mover win))
-- Connection: (if (>= (connected "piece" ((edge forward) (edge backward))) 2) (mover win))
-- No moves: (if (no_legal_actions) (mover win|lose))
-- Score: (if (full_board) (by_score)) with (set_score mover (count (occupied mover)))
-- Elimination: (if (captured_all "piece") (mover win))
-- Directions: orthogonal, diagonal, any, forward, backward, forward_left, forward_right
-- Boards: (square N), (hexagon D), (hex_rectangle W H), (rectangle W H)
-- set_forward required for forward/backward directions: (players 2 (set_forward (P1 up) (P2 down)))
-- Start positions: (place "piece" P1 ((row 0) (row 1))) or (place "piece" P1 (INDEX INDEX ...))
-- Piece names in rules MUST match equipment. Parentheses MUST balance.
-- Movement ALWAYS needs the piece name: (step "pawn" direction:any), NOT (step "any")
-- (hop "piece" direction:DIR hop_over:opponent capture:true) for jump captures
-- (slide "piece" direction:DIR) for long-range movement
-- Start row indices must exist on the board (e.g., hexagon 9 has rows 0-16)
+=== BOARDS ===
+(square N) | (hexagon D) | (hex_rectangle W H) | (rectangle W H)
 
-=== MISTAKES THAT WILL BREAK YOUR GAME ===
-- (connected ...) triggers on a SINGLE piece — do not use as a win condition unless
-  you require connecting across the full board: (>= (connected "p" ((edge X) (edge Y))) 2)
-- (line N) with N < 4 ends the game in 1-3 turns on most boards
-- If end uses (by_score), you MUST have (set_score ...) in effects, else both scores are 0
-- Each piece name must be unique — ("token" both), NOT ("token" P1) + ("token" P2)
-- (row N) can fail on hexagon boards — use explicit indices for hex start positions
-- (custodial N) with N > 1 almost never triggers — use N=1 for active captures
-- Ludax has NO dice, NO cards, NO hidden information, NO random events
+=== PIECES ===
+("name" both) — shared type | ("name" P1) — one player only
+Names must be unique. Use ("token" both), NOT ("token" P1) + ("token" P2).
+
+=== START (optional) ===
+(place "piece" P1 ((row 0) (row 1)))     — row-based (square/rectangle only)
+(place "piece" P1 (0 1 2 3 4))           — explicit indices (works on all boards)
+
+=== PLAY ===
+(repeat (P1 P2) ACTION) or (once_through (P1 P2) ACTION)
+
+Actions:
+  (place "p" (destination MASK) (result PRED)? (effects EFFECTS)?)
+  (move (or MOVES...) (effects EFFECTS)?)
+
+Moves:
+  (step "p" direction:DIR)              — one cell
+  (slide "p" direction:DIR)             — any distance
+  (hop "p" direction:DIR hop_over:opponent capture:true) — jump over piece
+  priority:N on moves means lower number = mandatory first
+
+(force_pass) after action = pass when no legal moves
+
+=== EFFECTS (inside place or move only) ===
+(capture MASK)                          — remove pieces matching mask
+(flip MASK)                             — change ownership of matched pieces
+(promote "from" "to" MASK)              — upgrade piece type at mask
+(extra_turn PLAYER same_piece:true?)    — take another turn
+(set_score PLAYER FUNCTION)             — update score
+(increment_score PLAYER FUNCTION)       — add to score
+(if PREDICATE EFFECT)                   — conditional effect
+
+=== END CONDITIONS ===
+(if (line "p" N) (mover win|lose))      — N in a row
+(if (>= (connected "p" ((edge A) (edge B))) 2) (mover win)) — span board edges
+(if (no_legal_actions) (mover win|lose))
+(if (full_board) (draw|by_score))
+(if (captured_all "p") (mover win))
+(if (exists MASK) (mover win))          — piece reaches a zone
+
+=== MASKS ===
+(empty) | (occupied mover|opponent) | (edge forward|backward|left|right)
+(row N) | (column N) | (corners) | (center)
+(and M M) | (or M M) | (not M) | (adjacent M direction:DIR)
+(custodial "p" N orientation:orthogonal|diagonal|any)
+
+=== DIRECTIONS ===
+orthogonal | diagonal | any | forward | backward
+forward_left | forward_right | up | down | left | right
+(set_forward required for forward/backward: (players 2 (set_forward (P1 up) (P2 down))))
+
+=== FUNCTIONS ===
+(count MASK) | (score PLAYER) | (add F F) | (multiply F F) | (subtract F F)
+
+=== WILL BREAK YOUR GAME ===
+- (connected) triggers on ONE piece — only use with ((edge X) (edge Y)) to require full-board span
+- (line N) with N < 4 ends in 1-3 turns
+- (by_score) without (set_score) in effects = both scores are 0
+- (row N) fails on hexagon boards — use explicit indices
+- (custodial N) with N > 1 almost never triggers
+- Ludax has NO dice, NO cards, NO hidden info, NO random events
 
 Output ONLY the (game ...) expression. No explanation."""
 
