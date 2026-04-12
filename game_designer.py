@@ -56,26 +56,32 @@ GAME_ARCHETYPES = [
     ("line", "Form N pieces in a row to win",
      '(game "X" (players 2) (equipment (board (square 9)) (pieces ("token" both))) (rules (play (repeat (P1 P2) (place "token" (destination (empty))))) (end (if (line "token" 5) (mover win)) (if (full_board) (draw)))))'),
 
-    ("territory", "Control the most pieces when the board fills",
+    ("territory", "Control the most pieces when the board fills — captures remove opponent stones",
      '(game "X" (players 2) (equipment (board (hex_rectangle 7 7)) (pieces ("stone" both))) (rules (play (repeat (P1 P2) (place "stone" (destination (empty)) (effects (capture (custodial "stone" 1 orientation:orthogonal)) (set_score mover (count (occupied mover))) (set_score opponent (count (occupied opponent))))))) (end (if (full_board) (by_score)))))'),
 
     ("connection", "Connect your pieces across opposite board edges",
      '(game "X" (players 2 (set_forward (P1 up) (P2 right))) (equipment (board (hex_rectangle 9 9)) (pieces ("token" both))) (rules (play (repeat (P1 P2) (place "token" (destination (empty))))) (end (if (>= (connected "token" ((edge forward) (edge backward))) 2) (mover win)))))'),
 
-    ("race", "Move pieces to reach the opponent's side of the board",
-     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("runner" both))) (rules (start (place "runner" P1 ((row 0) (row 1))) (place "runner" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (step "runner" direction:forward)))) (end (if (exists (and (occupied mover) (edge forward))) (mover win)))))'),
+    ("race_with_capture", "Move pieces forward, hop-capture opponents, first to reach the far edge wins",
+     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("runner" both))) (rules (start (place "runner" P1 ((row 0) (row 1))) (place "runner" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (or (hop "runner" direction:(forward_left forward_right) hop_over:opponent capture:true priority:0) (step "runner" direction:(forward_left forward_right) priority:1))))) (end (if (exists (and (occupied mover) (edge forward))) (mover win)) (if (no_legal_actions) (mover lose)))))'),
 
-    ("elimination", "Capture all opponent pieces to win",
-     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("warrior" both))) (rules (start (place "warrior" P1 ((row 0) (row 1))) (place "warrior" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (or (hop "warrior" direction:diagonal hop_over:opponent capture:true priority:0) (step "warrior" direction:diagonal priority:1))))) (end (if (no_legal_actions) (mover lose)))))'),
+    ("elimination", "Hop-capture all opponent pieces — mandatory captures, chain jumps",
+     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("warrior" both))) (rules (start (place "warrior" P1 ((row 0) (row 1))) (place "warrior" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (or (hop "warrior" direction:diagonal hop_over:opponent capture:true priority:0) (step "warrior" direction:diagonal priority:1)) (effects (if (and (action_was mover hop) (can_move_again hop)) (extra_turn mover same_piece:true)))))) (end (if (no_legal_actions) (mover lose)))))'),
 
-    ("flip_territory", "Place pieces that flip opponent pieces to your color",
+    ("flip_territory", "Place pieces that flip opponent pieces to your color — must flip to place",
      '(game "X" (players 2) (equipment (board (square 8)) (pieces ("disc" both))) (rules (start (place "disc" P1 (27 36)) (place "disc" P2 (28 35))) (play (repeat (P1 P2) (place "disc" (destination (empty)) (result (exists (custodial "disc" any))) (effects (flip (custodial "disc" any)) (set_score mover (count (occupied mover))) (set_score opponent (count (occupied opponent))))) (force_pass))) (end (if (passed both) (by_score)))))'),
 
-    ("promotion_race", "Move pieces forward with promotion at the far edge",
-     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("pawn" both) ("king" both))) (rules (start (place "pawn" P1 ((row 0) (row 1))) (place "pawn" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (or (step "pawn" direction:(forward_left forward_right) priority:1) (step "king" direction:diagonal priority:1)) (effects (promote "pawn" "king" (edge forward)))))) (end (if (no_legal_actions) (mover lose)))))'),
+    ("promotion_battle", "Two piece types — pawns promote to kings at the far edge, kings move freely",
+     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("pawn" both) ("king" both))) (rules (start (place "pawn" P1 (40 42 44 46 49 51 53 55 56 58 60 62)) (place "pawn" P2 (1 3 5 7 8 10 12 14 17 19 21 23))) (play (repeat (P1 P2) (move (or (hop "pawn" direction:(forward_left forward_right) hop_over:opponent capture:true priority:0) (step "pawn" direction:(forward_left forward_right) priority:1) (hop "king" direction:diagonal hop_over:opponent capture:true priority:0) (step "king" direction:diagonal priority:1)) (effects (promote "pawn" "king" (edge forward)) (if (and (action_was mover hop) (can_move_again hop)) (extra_turn mover same_piece:true)))))) (end (if (no_legal_actions) (mover win)))))'),
 
-    ("score_race", "Place pieces and score points — first to a target wins",
-     '(game "X" (players 2) (equipment (board (hex_rectangle 7 7)) (pieces ("gem" both))) (rules (play (repeat (P1 P2) (place "gem" (destination (empty)) (effects (capture (custodial "gem" 1 orientation:any)) (increment_score mover 1))))) (end (if (>= (score mover) 10) (mover win)) (if (full_board) (by_score)))))'),
+    ("asymmetric", "Each player has different piece types with different movement — one hunts, one evades",
+     '(game "X" (players 2 (set_forward (P1 down) (P2 up))) (equipment (board (square 8)) (pieces ("wolf" P1) ("sheep" P2))) (rules (start (place "wolf" P1 (3)) (place "sheep" P2 (56 58 60 62))) (play (repeat (P1 P2) (move (or (step "wolf" direction:diagonal) (step "sheep" direction:(forward_left forward_right)))))) (end (if (exists (and (occupied mover) (edge forward))) (mover win)) (if (no_legal_actions) (mover lose)))))'),
+
+    ("score_race", "Place pieces and score points from captures — first to a target wins",
+     '(game "X" (players 2) (equipment (board (hex_rectangle 7 7)) (pieces ("gem" both))) (rules (play (repeat (P1 P2) (place "gem" (destination (empty)) (effects (capture (custodial "gem" 1 orientation:any)) (increment_score mover (count (custodial "gem" 1 orientation:any))))))) (end (if (>= (score mover) 10) (mover win)) (if (full_board) (by_score)))))'),
+
+    ("line_with_penalty", "Form a long line to win, but forming a short line LOSES — a trap game",
+     '(game "X" (players 2) (equipment (board (hexagon 9)) (pieces ("token" both))) (rules (play (repeat (P1 P2) (place "token" (destination (empty))))) (end (if (line "token" 4) (mover win)) (if (line "token" 3) (mover lose)))))'),
 ]
 
 GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept AND a game archetype with a reference example, output a complete, valid Ludax game.
