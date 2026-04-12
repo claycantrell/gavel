@@ -43,10 +43,12 @@ Output a JSON object with these fields:
 - "theme": a 2-3 sentence backstory/theme (what's the world? who are the players? what's at stake?)
 - "board": one of: "square 5", "square 7", "square 8", "square 9", "hexagon 7", "hexagon 9", "hex_rectangle 7 7", "hex_rectangle 9 9", "rectangle 6 8"
 - "mechanic": the core player action — one of: "placement" (drop pieces on empty cells), "movement" (slide/step/hop existing pieces), "placement_with_capture" (place + flip or custodial capture)
-- "win_condition": what ends the game — choose something that fits the theme
-- "twist": one unique rule that makes this game different from all others — something surprising that emerges from the theme
+- "win_condition": what ends the game — must be achievable through board play (NO dice, cards, or random events). Good options: control the most territory when the board fills, form a long line, eliminate opponent pieces, connect opposite edges, reach a target score.
+- "twist": one unique rule expressible through board geometry, capture/flip patterns, or scoring — NOT through dice, cards, hidden info, or external components
 
 Your theme MUST be inspired by the random seed words provided in the user message. Interpret them creatively — they are evocative sparks, not literal requirements. The theme should MOTIVATE the mechanics.
+
+IMPORTANT: The game engine is DETERMINISTIC. No dice, no cards, no random events, no hidden information. All mechanics must work through piece placement, piece movement, capturing, flipping, and scoring on a visible board.
 
 Output ONLY the JSON. No markdown fences."""
 
@@ -93,6 +95,28 @@ GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept, ou
 - (hop "piece" direction:DIR hop_over:opponent capture:true) for jump captures
 - (slide "piece" direction:DIR) for long-range movement
 - Start row indices must exist on the board (e.g., hexagon 9 has rows 0-16)
+
+=== COMMON MISTAKES TO AVOID ===
+1. INSTANT WIN: Do NOT use (line "piece" 3) or (connected ...) as a win condition
+   for placement games — the FIRST piece placed will immediately satisfy (connected)
+   since a single piece trivially connects to itself. Use (line "piece" 5) or higher,
+   or use (full_board) (by_score) for placement games.
+2. TOO SHORT: If your game uses (line N), make N at least 4 for small boards and 5+
+   for larger boards. Otherwise games end in 2-3 turns.
+3. FIRST PLAYER WINS: Placement games where the first player has a decisive advantage
+   are bad. Add (force_pass) and (by_score) for more balanced endgames, or use
+   custodial capture / flip to create catch-up mechanics.
+4. PIECE NAME REUSE: Each piece name must be unique. Do NOT define ("token" P1) and
+   ("token" P2) separately — use ("token" both) instead.
+5. MOVEMENT ON HEX: (row N) works on square/rectangle boards but can fail on hexagons.
+   For hexagon start positions, use explicit indices: (place "piece" P1 (0 1 2 3 4))
+6. DEAD MECHANICS: If you add (capture ...) or (flip ...) effects, use (custodial 1)
+   not (custodial 3) — higher numbers rarely trigger and make the mechanic useless.
+7. NO SCORING WITHOUT TRACKING: If your end uses (by_score), you MUST have
+   (set_score mover ...) in the effects block, otherwise both players have score 0.
+8. THEMATIC MECHANICS: Your twist should be expressible in Ludax. Ludax has NO dice,
+   NO cards, NO hidden information, NO random events. Express your twist through
+   board geometry, capture rules, win conditions, and scoring.
 
 Output ONLY the (game ...) expression. No explanation."""
 
