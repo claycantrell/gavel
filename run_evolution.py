@@ -41,8 +41,11 @@ def fitness(r):
     b = max(r["balance"], 0.01)
     c = max(r["completion"], 0.01)
     d = max(r["decision_moves"], 0.01)
-    mf = max(r.get("mechanic_frequency", 0), 0.01)
-    return round((b * c * d * mf) ** 0.25, 3)
+    base = round((b * c * d) ** (1/3), 3)
+    mf = r.get("mechanic_frequency", 1.0)
+    if mf < 0.05 and r.get("score_volatility", 0) > 0:
+        return round(base * 0.3, 3)
+    return base
 
 
 def pick_target(game_str):
