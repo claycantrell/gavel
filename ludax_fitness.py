@@ -160,10 +160,82 @@ def evaluate_game(game_str: str,
     else:
         evaluation["board_coverage_default"] = 0
 
-    # Trace score: placeholder — would need MCTS vs random comparison
-    evaluation["trace_score"] = 0.5 if evaluation["balance"] > 0.3 else 0
+    # Skill trace: measure MCTS vs random win rate for promising games
+    # Only compute for games that pass basic quality checks (saves ~8s per bad game)
+    if (evaluation["completion"] > 0.5 and evaluation["balance"] > 0.2
+            and evaluation["mean_turns"] > 5):
+        try:
+            evaluation["trace_score"] = compute_skill_trace(game_str, num_games=6, mcts_sims=30, seed=seed)
+        except Exception:
+            evaluation["trace_score"] = 0
+    else:
+        evaluation["trace_score"] = 0
 
     return evaluation
+
+
+def compute_skill_trace(game_str: str, num_games: int = 10,
+                        mcts_sims: int = 50, seed: int = 42) -> float:
+    """
+    Measure strategic depth: how often does MCTS beat random play?
+
+    Plays num_games where MCTS controls one player and random controls the other,
+    alternating sides. Returns the MCTS win rate (0.5 = no skill, 1.0 = pure skill).
+
+    This is the Ludax equivalent of the Java "FastTrace" evaluation, but ~100x faster.
+    """
+    env, error = compile_and_check(game_str)
+    if env is None:
+        return 0.0
+
+    from ludax.policies.mcts import uct_mcts_policy
+    from ludax.policies.simple import random_policy
+
+    mcts_fn = uct_mcts_policy(env, num_simulations=mcts_sims, max_depth=15)
+    random_fn = random_policy()
+    step_fn = jax.jit(env.step)
+
+    rng = jax.random.PRNGKey(seed)
+    mcts_wins = 0
+    total_decisive = 0
+
+    for game_i in range(num_games):
+        rng, init_key = jax.random.split(rng)
+        # Batch size 1 for policies (they expect batched input)
+        state = env.init(init_key)
+        state_b = jax.tree_util.tree_map(lambda x: x[None, ...], state)
+
+        # Alternate which player MCTS controls
+        mcts_player = game_i % 2
+
+        for turn in range(2000):
+            if state.terminated or state.truncated:
+                break
+
+            rng, policy_key = jax.random.split(rng)
+            current_player = int(state.current_player)
+
+            if current_player == mcts_player:
+                action = mcts_fn(state_b, policy_key)[0]
+            else:
+                action = random_fn(state_b, policy_key)[0]
+
+            state = env.step(state, action)
+            state_b = jax.tree_util.tree_map(lambda x: x[None, ...], state)
+
+        if state.terminated:
+            rewards = np.array(state.rewards)
+            if rewards[mcts_player] > 0:
+                mcts_wins += 1
+                total_decisive += 1
+            elif rewards[1 - mcts_player] > 0:
+                total_decisive += 1
+            # draws don't count
+
+    if total_decisive == 0:
+        return 0.5  # no decisive games, can't measure skill
+
+    return mcts_wins / total_decisive
 
 
 def close_evaluation(game_str: str):
