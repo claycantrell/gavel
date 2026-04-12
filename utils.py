@@ -151,13 +151,16 @@ ADDITIONAL_SPACING_TOKENS = ["equipment", "rules", "phase", "end"]
 def get_current_parenthetical(game: str):
     '''
     Returns the final open parenthetical in the game string, or the empty string
-    if no such parenthetical exists
+    if no such parenthetical exists. Single reverse pass — O(n).
     '''
-    for i in range(1, len(game) + 1):
-        sub = game[-i:]
-        if sub.count("(") > sub.count(")"):
-            return sub
-    
+    depth = 0
+    for i in range(len(game) - 1, -1, -1):
+        if game[i] == ")":
+            depth += 1
+        elif game[i] == "(":
+            if depth == 0:
+                return game[i:]
+            depth -= 1
     return ""
 
 def pretty_format_single_line_game(game: str):
@@ -296,34 +299,12 @@ def indent_lines(lines):
 def _extract_parentheticals(game: str):
     '''
     Given a game description, extract all substrings within parentheses. For each substring,
-    we return the prefix, actual substring, suffix, and depth
+    we return the prefix, actual substring, suffix, and depth.
+
+    Delegates to ludii_parser.extract_parentheticals which uses a proper tree-based parser.
     '''
-
-    parenthetical_idxs_by_depth = defaultdict(list)
-    depth = 0
-
-    for idx, char in enumerate(game):
-        
-        # Add an open parenthetical at the current depth and increase the depth by 1
-        if char == "(":
-            parenthetical_idxs_by_depth[depth].append([idx, None, depth])
-            depth += 1
-
-        # Close the last parenthetical at the current depth and decrease the depth by 1
-        elif char == ")":
-            depth -= 1
-            parenthetical_idxs_by_depth[depth][-1][1] = idx
-
-    parentheticals = []
-    for start, end, depth in sum(parenthetical_idxs_by_depth.values(), []):
-        prefix = game[:start]
-        parenthetical = game[start:end+1]
-        suffix = game[end+1:]
-
-        if depth != 0:
-            parentheticals.append((prefix, parenthetical, suffix, depth))
-
-    return parentheticals
+    from ludii_parser import extract_parentheticals
+    return extract_parentheticals(game)
 
 def _remove_extraneous_code(game: str):
     '''

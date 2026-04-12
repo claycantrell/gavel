@@ -11,7 +11,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
 from config import ArchiveGame, MutationSelectionStrategy, MutationStrategy
-from utils import _extract_parentheticals
+from ludii_parser import extract_parentheticals
 
 LUDII_SYSTEM_PROMPT = """You are an expert in the Ludii game description language (L-GDL). Ludii represents board games as nested S-expressions using "ludemes" — high-level game-design primitives.
 
@@ -79,7 +79,7 @@ class BaseMutator(ABC):
 
     def _select_mutation_location(self, game: ArchiveGame, strategy: MutationSelectionStrategy):
         """Select a balanced parenthetical in the game to replace."""
-        parentheticals = [p for p in _extract_parentheticals(game.game_str) if p[0] != ""]
+        parentheticals = [p for p in extract_parentheticals(game.game_str) if p[0] != ""]
 
         if strategy == MutationSelectionStrategy.RANDOM:
             prefix, middle, suffix, depth = random.choice(parentheticals)
