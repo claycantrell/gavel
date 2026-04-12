@@ -84,6 +84,12 @@ class MAPElitesSearch():
             self.llm_judge = LLMFitnessEvaluator()
             self.evaluation_fn = self._llm_eval
 
+        elif fitness_evaluation_strategy == FitnessEvaluationStrategy.ADAPTIVE:
+            self.llm_judge = LLMFitnessEvaluator()
+            self.evaluation_fn = partial(self._adaptive_eval, thinking_time=thinking_time,
+                                         num_games=games_per_eval, max_turns=max_turns,
+                                         timeout_duration=self.fitness_eval_timeout)
+
         self.archive = archive
         self.num_selections = num_selections
         self.elite_selection_strategy = elite_selection_strategy
@@ -110,6 +116,34 @@ class MAPElitesSearch():
         Evaluate game quality using an LLM judge (no Java/simulation needed)
         '''
         return self.llm_judge.evaluate(game_str)
+
+    def _adaptive_eval(self, game_str: str, thinking_time: int, num_games: int,
+                       max_turns: int, timeout_duration: int, llm_threshold: float = 0.4):
+        '''
+        Adaptive evaluation: LLM pre-filter → simulation only for promising games.
+        Saves expensive Java/MCTS compute by rejecting clearly bad games early.
+        '''
+        # Stage 1: fast LLM pre-filter
+        llm_eval = self.llm_judge.evaluate(game_str)
+
+        if llm_eval["llm_fitness"] < llm_threshold:
+            # LLM says it's not worth simulating
+            return llm_eval
+
+        # Stage 2: full simulation for games that pass the LLM filter
+        sim_eval = _get_fast_evaluation(game_str, ai_name="UCT", thinking_time=thinking_time,
+                                        num_games=num_games, max_turns=max_turns,
+                                        timeout_duration=timeout_duration)
+
+        # Merge: keep simulation metrics but add LLM scores as additional signal
+        sim_eval["llm_coherence"] = llm_eval["llm_coherence"]
+        sim_eval["llm_interestingness"] = llm_eval["llm_interestingness"]
+        sim_eval["llm_balance"] = llm_eval["llm_balance"]
+        sim_eval["llm_novelty"] = llm_eval["llm_novelty"]
+        sim_eval["llm_completeness"] = llm_eval["llm_completeness"]
+        sim_eval["llm_rationale"] = llm_eval["llm_rationale"]
+
+        return sim_eval
 
     @staticmethod
     def _random_eval(game_str: str, timeout_duration: int):
@@ -391,7 +425,7 @@ if __name__ == '__main__':
     
     # Fitness arguments
     parser.add_argument('--fitness_aggregator', type=str, default="hmean", choices=["avg", "hmean", "min"], help="Aggregation function to use when combining evaluation metrics into a fitness score")
-    parser.add_argument('--fitness_evaluation_strategy', type=str, default="random", choices=["random", "uct", "one_ply", "combined", "llm_judge"], help="Strategy for evaluating fitnesses")
+    parser.add_argument('--fitness_evaluation_strategy', type=str, default="random", choices=["random", "uct", "one_ply", "combined", "llm_judge", "adaptive"], help="Strategy for evaluating fitnesses")
     parser.add_argument('--games_per_eval', type=int, default=5, help="Number of games to simulate for each evaluation")
     parser.add_argument('--thinking_time', type=float, default=0.1, help="Thinking time to use per move when evaluating fitnesses with search agents")
     parser.add_argument('--max_turns', type=int, default=250, help="Maximum number of turns to allow for each game during evaluation")

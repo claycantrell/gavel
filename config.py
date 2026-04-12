@@ -31,6 +31,7 @@ class FitnessEvaluationStrategy(str, Enum):
     ONE_PLY = "one_ply"
     COMBINED = "combined"
     LLM_JUDGE = "llm_judge"
+    ADAPTIVE = "adaptive"
 
 class FitnessAggregationFn(str, Enum):
     MEAN = "mean"
