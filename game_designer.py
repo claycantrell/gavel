@@ -206,10 +206,13 @@ def _pick_archetype(client: anthropic.Anthropic, concept: dict, model: str) -> t
 
 
 def generate_game(client: anthropic.Anthropic, concept: dict,
-                  model: str = "claude-sonnet-4-6", max_repairs: int = 3) -> typing.Optional[str]:
+                  model: str = "claude-sonnet-4-6", max_repairs: int = 3,
+                  forced_archetype: typing.Optional[typing.Tuple] = None) -> typing.Optional[str]:
     """Generate a complete Ludax game from a concept. Returns game string or None."""
-    # Pick archetype based on theme
-    arch_name, arch_desc, arch_example = _pick_archetype(client, concept, model)
+    if forced_archetype:
+        arch_name, arch_desc, arch_example = forced_archetype
+    else:
+        arch_name, arch_desc, arch_example = _pick_archetype(client, concept, model)
     concept["archetype"] = arch_name
 
     brief = (
@@ -268,6 +271,10 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
     log(f"=== NOVEL GAME DESIGNER ===")
     log(f"Generating {num_games} games with {model}\n")
 
+    # Shuffle archetypes so each game gets a different type
+    shuffled_archetypes = GAME_ARCHETYPES.copy()
+    random.shuffle(shuffled_archetypes)
+
     for i in range(num_games):
         t0 = time.time()
 
@@ -284,9 +291,10 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
         log(f"  Win: {concept.get('win_condition', '?')[:60]}")
         log(f"  Twist: {concept.get('twist', '?')[:60]}")
 
-        # Step 2: Generate game
+        # Step 2: Generate game (force archetype rotation for diversity)
+        forced_arch = shuffled_archetypes[i % len(shuffled_archetypes)]
         try:
-            game_str = generate_game(client, concept, model)
+            game_str = generate_game(client, concept, model, forced_archetype=forced_arch)
         except Exception as e:
             log(f"  GENERATION ERROR — {e}")
             continue
