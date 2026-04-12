@@ -179,6 +179,133 @@ class AnthropicMutator(BaseMutator):
             return asyncio.run(self._generate_mutations_async(prefix, suffix))
 
 
+AGENTIC_SYSTEM_PROMPT = """You are an expert board game designer working with the Ludii game description language. You design novel, interesting games by modifying existing ones.
+
+Key Ludii conventions:
+- Games have (players ...), (equipment {...}), (rules ...) sections
+- Rules contain (start ...), (play ...), and (end ...) blocks
+- Common ludemes: Step, Slide, Hop, Add, Remove, forEach, if/then
+- Board types: square, hex, rectangle, tri, etc.
+- Parentheses must balance. Every ( must have a matching )."""
+
+
+class AgenticMutator(BaseMutator):
+    """
+    Agentic mutator that uses a multi-turn propose-critique-refine loop.
+    Instead of blindly filling in blanks, the model:
+    1. Sees the full game and the section being mutated
+    2. Proposes a replacement with design rationale
+    3. Self-critiques for issues (syntax, balance, fun)
+    4. Produces a refined final version
+    """
+
+    def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3, temperature: float = 1.0):
+        super().__init__(num_return_sequences)
+        self.client = anthropic.Anthropic()
+        self.async_client = anthropic.AsyncAnthropic()
+        self.model_name = model_name
+        self.temperature = temperature
+
+    async def _propose_critique_refine(self, prefix: str, original_section: str, suffix: str) -> str:
+        """Single agentic mutation: propose → critique → refine."""
+        full_game = f"{prefix}{original_section}{suffix}"
+
+        # Turn 1: Propose a mutation with rationale
+        messages = [
+            {"role": "user", "content": (
+                f"Here is a Ludii board game:\n\n{full_game}\n\n"
+                f"I want to mutate this section: {original_section}\n\n"
+                f"Propose a creative replacement that makes the game more interesting or novel. "
+                f"Output the replacement expression, then explain your design rationale in 1-2 sentences."
+            )}
+        ]
+
+        response = await self.async_client.messages.create(
+            model=self.model_name, max_tokens=512, temperature=self.temperature,
+            system=AGENTIC_SYSTEM_PROMPT, messages=messages,
+        )
+        proposal = response.content[0].text.strip()
+        messages.append({"role": "assistant", "content": proposal})
+
+        # Turn 2: Self-critique
+        messages.append({"role": "user", "content": (
+            "Now critique your proposal. Check for:\n"
+            "1. Syntax errors (unbalanced parentheses, invalid ludemes)\n"
+            "2. Coherence (does it fit with the rest of the game?)\n"
+            "3. Playability (will games actually terminate?)\n"
+            "4. Interest (does it create meaningful decisions?)\n"
+            "Be specific about any issues."
+        )})
+
+        response = await self.async_client.messages.create(
+            model=self.model_name, max_tokens=256, temperature=0.3,
+            system=AGENTIC_SYSTEM_PROMPT, messages=messages,
+        )
+        critique = response.content[0].text.strip()
+        messages.append({"role": "assistant", "content": critique})
+
+        # Turn 3: Produce refined version
+        messages.append({"role": "user", "content": (
+            "Based on your critique, produce the final refined replacement expression. "
+            "Output ONLY the Ludii expression — no explanation, no markdown."
+        )})
+
+        response = await self.async_client.messages.create(
+            model=self.model_name, max_tokens=512, temperature=0.5,
+            system=AGENTIC_SYSTEM_PROMPT, messages=messages,
+        )
+
+        output = response.content[0].text.strip()
+        if output.startswith("```"):
+            output = output.split("\n", 1)[1] if "\n" in output else output[3:]
+            if output.endswith("```"):
+                output = output[:-3]
+            output = output.strip()
+        output = output.replace("\n", " ")
+        return output
+
+    async def _generate_mutations_async(self, prefix: str, suffix: str,
+                                         original_section: str = "") -> typing.List[str]:
+        tasks = [self._propose_critique_refine(prefix, original_section, suffix)
+                 for _ in range(self.num_return_sequences)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        new_games = []
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"Agentic mutation error: {result}")
+                continue
+            new_games.append(f"{prefix}{result}{suffix}".strip())
+        return new_games
+
+    def _generate_mutations(self, prefix: str, suffix: str) -> typing.List[str]:
+        # This is called by BaseMutator.mutate, but we need the original section
+        # for the agentic loop. We'll get it from the stored context.
+        return self._run_async(self._generate_mutations_async(prefix, suffix, self._current_middle))
+
+    def _run_async(self, coro):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(asyncio.run, coro).result()
+        else:
+            return asyncio.run(coro)
+
+    def mutate(self, game: ArchiveGame,
+               mutation_selection_strategy: MutationSelectionStrategy,
+               mutation_strategy: MutationStrategy):
+        """Override mutate to pass the original section to the agentic loop."""
+        prefix, middle, suffix, depth = self._select_mutation_location(game, mutation_selection_strategy)
+        self._current_middle = middle
+        new_games = self._generate_mutations(prefix, suffix)
+        return new_games, (prefix, middle, suffix, depth)
+
+
 class LLMMutator(BaseMutator):
     """Original mutator using a local HuggingFace causal LM with fill-in-the-middle."""
 

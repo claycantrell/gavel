@@ -24,7 +24,7 @@ from config import ArchiveGame, MutationSelectionStrategy, EliteSelectionStrateg
 from fitness_helpers import _get_fast_evaluation, _close_fast_evaluation, _evaluate_fitness, _compute_balance, _compute_drawishness, FITNESS_METRIC_KEYS, UNCOMPILABLE_FITNESS
 from java_helpers import SYNTACTIC_BEHAVIORAL_CHARACTERISTICS, SEMANTIC_BEHAVIORAL_CHARACTERISTICS
 from llm_fitness import LLMFitnessEvaluator
-from mutators import LLMMutator, AnthropicMutator
+from mutators import LLMMutator, AnthropicMutator, AgenticMutator
 from utils import gpu_utilization, spin_gpu
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -402,6 +402,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default="LudiiLMs/code-llama-13b-fitm-mask", help="Name of the model to load")
     parser.add_argument('--use_anthropic', action='store_true', help="Use Anthropic API instead of local HuggingFace model")
+    parser.add_argument('--use_agentic', action='store_true', help="Use agentic propose-critique-refine mutation loop (implies --use_anthropic)")
     parser.add_argument('--anthropic_model', type=str, default="claude-opus-4-6", help="Anthropic model to use (e.g. claude-opus-4-6, claude-sonnet-4-6)")
     parser.add_argument('--verbose', action='store_true', help="Whether to print verbose output")
     parser.add_argument('--spin_gpu', action='store_true', help="Whether to spin the GPU during evaluation")
@@ -476,8 +477,15 @@ if __name__ == '__main__':
     # Set the random seed
     set_seed(args.seed)
 
-    # Create the mutator (Anthropic API or local HuggingFace)
-    if args.use_anthropic:
+    # Create the mutator (Agentic / Anthropic API / local HuggingFace)
+    if args.use_agentic:
+        print(f"Using agentic propose-critique-refine loop with model: {args.anthropic_model}")
+        mutator = AgenticMutator(
+            model_name=args.anthropic_model,
+            num_return_sequences=args.num_mutations,
+            temperature=args.mutation_temperature,
+        )
+    elif args.use_anthropic:
         print(f"Using Anthropic API with model: {args.anthropic_model}")
         mutator = AnthropicMutator(
             model_name=args.anthropic_model,
