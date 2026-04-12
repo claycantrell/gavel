@@ -82,6 +82,18 @@ GAME_ARCHETYPES = [
 
     ("line_with_penalty", "Form a long line to win, but forming a short line LOSES — a trap game",
      '(game "X" (players 2) (equipment (board (hexagon 9)) (pieces ("token" both))) (rules (play (repeat (P1 P2) (place "token" (destination (empty))))) (end (if (line "token" 4) (mover win)) (if (line "token" 3) (mover lose)))))'),
+
+    ("territory_control", "Place walls to surround empty space — most territory when board fills wins",
+     '(game "X" (players 2) (equipment (board (square 7)) (pieces ("wall" both))) (rules (play (repeat (P1 P2) (place "wall" (destination (empty)) (effects (set_score mover (count (and (empty) (adjacent (occupied mover))))) (set_score opponent (count (and (empty) (adjacent (occupied opponent))))))))) (end (if (full_board) (by_score)))))'),
+
+    ("hunt", "Setup phase then movement — one side hunts, the other evades. Uses two phases.",
+     '(game "X" (players 2 (set_forward (P1 down) (P2 up))) (equipment (board (square 7)) (pieces ("hunter" P1) ("prey" P2))) (rules (play (once_through (P1) (place "hunter" (destination (empty)))) (once_through (P2 P2 P2 P2) (place "prey" (destination (empty)))) (repeat (P1 P2) (move (or (step "hunter" direction:any) (step "prey" direction:(forward_left forward_right)))))) (end (if (no_legal_actions) (mover lose)))))'),
+
+    ("multi_win", "Multiple paths to victory — line OR score threshold OR elimination",
+     '(game "X" (players 2) (equipment (board (hex_rectangle 7 7)) (pieces ("stone" both))) (rules (play (repeat (P1 P2) (place "stone" (destination (empty)) (effects (capture (custodial "stone" 1 orientation:orthogonal)) (increment_score mover (count (custodial "stone" 1 orientation:orthogonal))))))) (end (if (>= (score mover) 5) (mover win)) (if (line "stone" 5) (mover win)) (if (full_board) (by_score)))))'),
+
+    ("zone_control", "Named regions give bonus points — control the sacred zones to win",
+     '(game "X" (players 2) (equipment (board (square 7)) (pieces ("token" both)) (regions ("shrine" (0 6 42 48)) ("nexus" (24)))) (rules (play (repeat (P1 P2) (place "token" (destination (and (empty) (not (region "nexus")))) (effects (set_score mover (add (count (occupied mover)) (multiply 3 (count (and (occupied mover) (region "shrine")))))) (set_score opponent (add (count (occupied opponent)) (multiply 3 (count (and (occupied opponent) (region "shrine")))))))))) (end (if (full_board) (by_score)))))'),
 ]
 
 GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept AND a game archetype with a reference example, output a complete, valid Ludax game.
