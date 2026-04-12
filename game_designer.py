@@ -53,7 +53,35 @@ IMPORTANT: The game engine is DETERMINISTIC. No dice, no cards, no random events
 Output ONLY the JSON. No markdown fences."""
 
 
-GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept, output a complete, valid Ludax game.
+GAME_ARCHETYPES = [
+    ("line", "Form N pieces in a row to win",
+     '(game "X" (players 2) (equipment (board (square 9)) (pieces ("token" both))) (rules (play (repeat (P1 P2) (place "token" (destination (empty))))) (end (if (line "token" 5) (mover win)) (if (full_board) (draw)))))'),
+
+    ("territory", "Control the most pieces when the board fills",
+     '(game "X" (players 2) (equipment (board (hex_rectangle 7 7)) (pieces ("stone" both))) (rules (play (repeat (P1 P2) (place "stone" (destination (empty)) (effects (capture (custodial "stone" 1 orientation:orthogonal)) (set_score mover (count (occupied mover))) (set_score opponent (count (occupied opponent))))))) (end (if (full_board) (by_score)))))'),
+
+    ("connection", "Connect your pieces across opposite board edges",
+     '(game "X" (players 2 (set_forward (P1 up) (P2 right))) (equipment (board (hex_rectangle 9 9)) (pieces ("token" both))) (rules (play (repeat (P1 P2) (place "token" (destination (empty))))) (end (if (>= (connected "token" ((edge forward) (edge backward))) 2) (mover win)))))'),
+
+    ("race", "Move pieces to reach the opponent's side of the board",
+     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("runner" both))) (rules (start (place "runner" P1 ((row 0) (row 1))) (place "runner" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (step "runner" direction:forward)))) (end (if (exists (and (occupied mover) (edge forward))) (mover win)))))'),
+
+    ("elimination", "Capture all opponent pieces to win",
+     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("warrior" both))) (rules (start (place "warrior" P1 ((row 0) (row 1))) (place "warrior" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (or (hop "warrior" direction:diagonal hop_over:opponent capture:true priority:0) (step "warrior" direction:diagonal priority:1))))) (end (if (no_legal_actions) (mover lose)))))'),
+
+    ("flip_territory", "Place pieces that flip opponent pieces to your color",
+     '(game "X" (players 2) (equipment (board (square 8)) (pieces ("disc" both))) (rules (start (place "disc" P1 (27 36)) (place "disc" P2 (28 35))) (play (repeat (P1 P2) (place "disc" (destination (empty)) (result (exists (custodial "disc" any))) (effects (flip (custodial "disc" any)) (set_score mover (count (occupied mover))) (set_score opponent (count (occupied opponent))))) (force_pass))) (end (if (passed both) (by_score)))))'),
+
+    ("promotion_race", "Move pieces forward with promotion at the far edge",
+     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("pawn" both) ("king" both))) (rules (start (place "pawn" P1 ((row 0) (row 1))) (place "pawn" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (or (step "pawn" direction:(forward_left forward_right) priority:1) (step "king" direction:diagonal priority:1)) (effects (promote "pawn" "king" (edge forward)))))) (end (if (no_legal_actions) (mover lose)))))'),
+
+    ("score_race", "Place pieces and score points — first to a target wins",
+     '(game "X" (players 2) (equipment (board (hex_rectangle 7 7)) (pieces ("gem" both))) (rules (play (repeat (P1 P2) (place "gem" (destination (empty)) (effects (capture (custodial "gem" 1 orientation:any)) (increment_score mover 1))))) (end (if (>= (score mover) 10) (mover win)) (if (full_board) (by_score)))))'),
+]
+
+GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept AND a game archetype with a reference example, output a complete, valid Ludax game.
+
+IMPORTANT: Use the reference example as a SYNTAX GUIDE for how to structure your game. Your game should follow the same structural pattern but with DIFFERENT pieces, board, effects, and win conditions that fit your theme. Do NOT copy the example — transform it.
 
 === GAME SKELETON ===
 (game "Name"
@@ -161,9 +189,30 @@ def generate_theme(client: anthropic.Anthropic, model: str = "claude-sonnet-4-6"
     return result
 
 
+def _pick_archetype(client: anthropic.Anthropic, concept: dict, model: str) -> typing.Tuple[str, str, str]:
+    """Ask the LLM to pick the best archetype for this theme. Returns (name, description, example)."""
+    archetype_list = "\n".join(f"- {name}: {desc}" for name, desc, _ in GAME_ARCHETYPES)
+    resp = client.messages.create(
+        model=model, max_tokens=50, temperature=0.3,
+        system="Pick the game archetype that best fits this theme. Output ONLY the archetype name, nothing else.",
+        messages=[{"role": "user", "content":
+            f"Theme: {concept['theme']}\nTwist: {concept.get('twist','')}\n\nArchetypes:\n{archetype_list}"}],
+    )
+    chosen = resp.content[0].text.strip().lower().replace(" ", "_")
+    for name, desc, example in GAME_ARCHETYPES:
+        if name in chosen or chosen in name:
+            return name, desc, example
+    # Fallback: random
+    return random.choice(GAME_ARCHETYPES)
+
+
 def generate_game(client: anthropic.Anthropic, concept: dict,
                   model: str = "claude-sonnet-4-6", max_repairs: int = 3) -> typing.Optional[str]:
     """Generate a complete Ludax game from a concept. Returns game string or None."""
+    # Pick archetype based on theme
+    arch_name, arch_desc, arch_example = _pick_archetype(client, concept, model)
+    concept["archetype"] = arch_name
+
     brief = (
         f"Game: \"{concept['name']}\"\n"
         f"Theme: {concept['theme']}\n"
@@ -171,7 +220,9 @@ def generate_game(client: anthropic.Anthropic, concept: dict,
         f"Core mechanic: {concept['mechanic']}\n"
         f"Win condition: {concept['win_condition']}\n"
         f"Twist: {concept['twist']}\n\n"
-        f"Design a complete Ludax game that brings this theme to life through its mechanics."
+        f"Archetype: {arch_name} — {arch_desc}\n"
+        f"Reference example (use as SYNTAX GUIDE only, do NOT copy):\n{arch_example}\n\n"
+        f"Design a complete Ludax game that brings this theme to life. Transform the archetype — don't clone it."
     )
 
     messages = [{"role": "user", "content": brief}]
@@ -231,7 +282,7 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
 
         log(f"Game {i+1}: \"{concept.get('name', '?')}\" (seeds: {concept.get('seed_words', '?')})")
         log(f"  Theme: {concept.get('theme', '?')[:80]}")
-        log(f"  Board: {concept.get('board', '?')} | Mechanic: {concept.get('mechanic', '?')}")
+        log(f"  Board: {concept.get('board', '?')} | Mechanic: {concept.get('mechanic', '?')} | Archetype: {concept.get('archetype', '?')}")
         log(f"  Win: {concept.get('win_condition', '?')[:60]}")
         log(f"  Twist: {concept.get('twist', '?')[:60]}")
 
