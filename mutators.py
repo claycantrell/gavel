@@ -389,47 +389,50 @@ class AgenticMutator(BaseMutator):
         return new_games, (prefix, middle, suffix, depth)
 
 
-class LLMMutator(BaseMutator):
-    """Original mutator using a local HuggingFace causal LM with fill-in-the-middle."""
+if _HAS_TORCH:
+    class LLMMutator(BaseMutator):
+        """Original mutator using a local HuggingFace causal LM with fill-in-the-middle."""
 
-    def __init__(self, model: AutoModelForCausalLM, tokenizer: AutoTokenizer, config: GenerationConfig):
-        super().__init__(config.num_return_sequences)
-        self.model = model
-        self.model.eval()
+        def __init__(self, model: AutoModelForCausalLM, tokenizer: AutoTokenizer, config: GenerationConfig):
+            super().__init__(config.num_return_sequences)
+            self.model = model
+            self.model.eval()
 
-        self.tokenizer = tokenizer
+            self.tokenizer = tokenizer
 
-        # Store the HF generation config alongside the base config shim
-        self.hf_config = config
-        self.hf_config.pad_token_id = self.tokenizer.eos_token_id
+            # Store the HF generation config alongside the base config shim
+            self.hf_config = config
+            self.hf_config.pad_token_id = self.tokenizer.eos_token_id
 
-    def _format_prompt(self, prefix: str, suffix: str):
-        return f"<s><PRE> {prefix} <SUF>{suffix} <MID>"
+        def _format_prompt(self, prefix: str, suffix: str):
+            return f"<s><PRE> {prefix} <SUF>{suffix} <MID>"
 
-    def _format_output(self, output_token_ids: typing.List[int]):
-        output = self.tokenizer.decode(output_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=True)
-        if "<MID> " in output:
-            output = output.split("<MID> ")[1]
-        output = self.tokenizer.decode(self.tokenizer.encode(output), skip_special_tokens=True)
-        output = output.replace("\n", "")
-        return output
+        def _format_output(self, output_token_ids: typing.List[int]):
+            output = self.tokenizer.decode(output_token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=True)
+            if "<MID> " in output:
+                output = output.split("<MID> ")[1]
+            output = self.tokenizer.decode(self.tokenizer.encode(output), skip_special_tokens=True)
+            output = output.replace("\n", "")
+            return output
 
-    def _generate_mutations(self, prefix: str, suffix: str) -> typing.List[str]:
-        prompt = self._format_prompt(prefix, suffix)
+        def _generate_mutations(self, prefix: str, suffix: str) -> typing.List[str]:
+            prompt = self._format_prompt(prefix, suffix)
 
-        with torch.no_grad():
-            inputs = self.tokenizer(prompt, return_tensors="pt").input_ids.to(self.model.device)
-            generation_outputs = self.model.generate(
-                input_ids=inputs,
-                generation_config=self.hf_config,
-                max_new_tokens=512,
-            )
+            with torch.no_grad():
+                inputs = self.tokenizer(prompt, return_tensors="pt").input_ids.to(self.model.device)
+                generation_outputs = self.model.generate(
+                    input_ids=inputs,
+                    generation_config=self.hf_config,
+                    max_new_tokens=512,
+                )
 
-        outputs = [self._format_output(output.cpu().tolist()) for output in generation_outputs]
-        new_games = [f"{prefix}{output}{suffix}".strip() for output in outputs]
+            outputs = [self._format_output(output.cpu().tolist()) for output in generation_outputs]
+            new_games = [f"{prefix}{output}{suffix}".strip() for output in outputs]
 
-        del inputs
-        del generation_outputs
-        torch.cuda.empty_cache()
+            del inputs
+            del generation_outputs
+            torch.cuda.empty_cache()
 
-        return new_games
+            return new_games
+else:
+    LLMMutator = None
