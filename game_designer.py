@@ -62,20 +62,20 @@ GAME_ARCHETYPES = [
     ("connection", "Connect your pieces across opposite board edges",
      '(game "X" (players 2 (set_forward (P1 up) (P2 right))) (equipment (board (hex_rectangle 9 9)) (pieces ("token" both))) (rules (play (repeat (P1 P2) (place "token" (destination (empty))))) (end (if (>= (connected "token" ((edge forward) (edge backward))) 2) (mover win)))))'),
 
-    ("race_with_capture", "Move pieces forward, hop-capture opponents, first to reach the far edge wins",
+    ("race_with_capture", "Move pieces forward, hop-capture opponents, first to reach the far edge wins. NOTE: use (row N) for start positions — row 0 is bottom, adjust for board size",
      '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("runner" both))) (rules (start (place "runner" P1 ((row 0) (row 1))) (place "runner" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (or (hop "runner" direction:(forward_left forward_right) hop_over:opponent capture:true priority:0) (step "runner" direction:(forward_left forward_right) priority:1))))) (end (if (exists (and (occupied mover) (edge forward))) (mover win)) (if (no_legal_actions) (mover lose)))))'),
 
-    ("elimination", "Hop-capture all opponent pieces — mandatory captures, chain jumps",
+    ("elimination", "Hop-capture all opponent pieces — mandatory captures, chain jumps. NOTE: use (row N) for start — P1 at rows 0-1, P2 at top rows",
      '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("warrior" both))) (rules (start (place "warrior" P1 ((row 0) (row 1))) (place "warrior" P2 ((row 6) (row 7)))) (play (repeat (P1 P2) (move (or (hop "warrior" direction:diagonal hop_over:opponent capture:true priority:0) (step "warrior" direction:diagonal priority:1)) (effects (if (and (action_was mover hop) (can_move_again hop)) (extra_turn mover same_piece:true)))))) (end (if (no_legal_actions) (mover lose)))))'),
 
     ("flip_territory", "Place pieces that flip opponent pieces to your color — must flip to place",
      '(game "X" (players 2) (equipment (board (square 8)) (pieces ("disc" both))) (rules (start (place "disc" P1 (27 36)) (place "disc" P2 (28 35))) (play (repeat (P1 P2) (place "disc" (destination (empty)) (result (exists (custodial "disc" any))) (effects (flip (custodial "disc" any)) (set_score mover (count (occupied mover))) (set_score opponent (count (occupied opponent))))) (force_pass))) (end (if (passed both) (by_score)))))'),
 
-    ("promotion_battle", "Two piece types — pawns promote to kings at the far edge, kings move freely",
-     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("pawn" both) ("king" both))) (rules (start (place "pawn" P1 (40 42 44 46 49 51 53 55 56 58 60 62)) (place "pawn" P2 (1 3 5 7 8 10 12 14 17 19 21 23))) (play (repeat (P1 P2) (move (or (hop "pawn" direction:(forward_left forward_right) hop_over:opponent capture:true priority:0) (step "pawn" direction:(forward_left forward_right) priority:1) (hop "king" direction:diagonal hop_over:opponent capture:true priority:0) (step "king" direction:diagonal priority:1)) (effects (promote "pawn" "king" (edge forward)) (if (and (action_was mover hop) (can_move_again hop)) (extra_turn mover same_piece:true)))))) (end (if (no_legal_actions) (mover win)))))'),
+    ("promotion_battle", "Two piece types — pawns promote to kings at the far edge, kings move freely. NOTE: use (row N) for start, adjust for board size. MUST use square board.",
+     '(game "X" (players 2 (set_forward (P1 up) (P2 down))) (equipment (board (square 8)) (pieces ("pawn" both) ("king" both))) (rules (start (place "pawn" P1 ((row 0) (row 1) (row 2))) (place "pawn" P2 ((row 5) (row 6) (row 7)))) (play (repeat (P1 P2) (move (or (hop "pawn" direction:(forward_left forward_right) hop_over:opponent capture:true priority:0) (step "pawn" direction:(forward_left forward_right) priority:1) (hop "king" direction:diagonal hop_over:opponent capture:true priority:0) (step "king" direction:diagonal priority:1)) (effects (promote "pawn" "king" (edge forward)) (if (and (action_was mover hop) (can_move_again hop)) (extra_turn mover same_piece:true)))))) (end (if (no_legal_actions) (mover win)))))'),
 
-    ("asymmetric", "Each player has different piece types with different movement — one hunts, one evades",
-     '(game "X" (players 2 (set_forward (P1 down) (P2 up))) (equipment (board (square 8)) (pieces ("wolf" P1) ("sheep" P2))) (rules (start (place "wolf" P1 (3)) (place "sheep" P2 (56 58 60 62))) (play (repeat (P1 P2) (move (or (step "wolf" direction:diagonal) (step "sheep" direction:(forward_left forward_right)))))) (end (if (exists (and (occupied mover) (edge forward))) (mover win)) (if (no_legal_actions) (mover lose)))))'),
+    ("asymmetric", "Each player has different piece types with different movement — one hunts, one evades. NOTE: use (row N) for start. MUST use square board.",
+     '(game "X" (players 2 (set_forward (P1 down) (P2 up))) (equipment (board (square 8)) (pieces ("wolf" P1) ("sheep" P2))) (rules (start (place "wolf" P1 ((row 3))) (place "sheep" P2 ((row 7)))) (play (repeat (P1 P2) (move (or (step "wolf" direction:diagonal) (step "sheep" direction:(forward_left forward_right)))))) (end (if (exists (and (occupied mover) (edge forward))) (mover win)) (if (no_legal_actions) (mover lose)))))'),
 
     ("score_race", "Place pieces and score points from captures — first to a target wins",
      '(game "X" (players 2) (equipment (board (hex_rectangle 7 7)) (pieces ("gem" both))) (rules (play (repeat (P1 P2) (place "gem" (destination (empty)) (effects (capture (custodial "gem" 1 orientation:any)) (increment_score mover (count (custodial "gem" 1 orientation:any))))))) (end (if (>= (score mover) 10) (mover win)) (if (full_board) (by_score)))))'),
@@ -282,6 +282,20 @@ def generate_game(client: anthropic.Anthropic, concept: dict,
         if output.endswith("```"): output = output[:-3]
         output = output.strip()
     game_str = output.replace("\n", " ")
+
+    # Auto-fix: merge duplicate piece names ("x" P1) + ("x" P2) → ("x" both)
+    import re as _re
+    piece_defs = _re.findall(r'\("(\w+)"\s+(P1|P2|both)\)', game_str)
+    seen_names = {}
+    for name, owner in piece_defs:
+        if name in seen_names and seen_names[name] != owner and seen_names[name] != "both":
+            # Duplicate found — replace both with "both"
+            game_str = _re.sub(rf'\("{name}"\s+P[12]\)', f'("{name}" both)', game_str)
+            # Remove the duplicate definition (keep first occurrence)
+            parts = game_str.split(f'("{name}" both)')
+            if len(parts) > 2:
+                game_str = parts[0] + f'("{name}" both)' + f'("{name}" both)'.join(parts[2:])
+        seen_names[name] = owner
 
     # Validate + repair loop
     for attempt in range(max_repairs):
