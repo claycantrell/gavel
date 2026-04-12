@@ -46,7 +46,7 @@ Output a JSON object with these fields:
 - "win_condition": what ends the game — choose something that fits the theme
 - "twist": one unique rule that makes this game different from all others — something surprising that emerges from the theme
 
-Be creative with the theme. Draw from history, mythology, nature, science, warfare, exploration, trade, politics — not just abstract strategy. The theme should MOTIVATE the mechanics.
+Be creative with the theme. Draw from history, mythology, nature, science, warfare, exploration, trade, politics, espionage, astronomy, archaeology, alchemy, music, architecture — not just abstract strategy. AVOID ocean/tide/water themes (overused). The theme should MOTIVATE the mechanics.
 
 Output ONLY the JSON. No markdown fences."""
 
