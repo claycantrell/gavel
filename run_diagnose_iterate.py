@@ -9,12 +9,12 @@ import json
 import os
 import random
 import time
+import typing
 
 import anthropic
 
 from ludax_grammar import validate_game
 from ludax_fitness import evaluate_game
-from mutators import GAME_ARCHETYPES
 
 os.makedirs("exp_outputs", exist_ok=True)
 LOG_PATH = "exp_outputs/diagnose_run.log"
@@ -27,6 +27,17 @@ def log(msg):
 
 
 GAME_PROMPT_SHORT = """You are a Ludax game designer fixing a broken game. Output ONLY the complete corrected (game ...) expression."""
+
+MULTI_FIX_PROMPT = """You are a Ludax game designer fixing specific problems in a game.
+
+Plan 2-4 COORDINATED find-and-replace edits that fix the diagnosed problems together.
+Each edit should address part of the problem. Changes must be compatible with each other.
+
+Respond with a JSON array of edits:
+[{"find": "exact text to find", "replace": "replacement text"}]
+
+The "find" strings must EXACTLY match text in the current game. Copy them precisely.
+The "replace" strings must be valid Ludax syntax."""
 
 
 def diagnose(r: dict) -> list:
@@ -62,27 +73,79 @@ def diagnose(r: dict) -> list:
     return problems
 
 
-def fix_game(client, game_str: str, problems: list, concept: dict, model: str = "claude-sonnet-4-6", max_attempts: int = 3) -> str:
-    """Ask the LLM to fix specific problems in the game."""
+def fix_game(client, game_str: str, problems: list, concept: dict,
+             model: str = "claude-sonnet-4-6", attempt_num: int = 0) -> typing.Optional[str]:
+    """Fix specific problems via coordinated multi-edit. Escalates on repeated failure."""
+    import re
+
     problem_text = "\n".join(f"- {p}" for p in problems)
-    rules_text = concept.get("rules_text", "")
+
+    if attempt_num < 3:
+        # First 3 attempts: coordinated multi-edit
+        prompt = (
+            f"This Ludax game has problems:\n\n"
+            f"PROBLEMS:\n{problem_text}\n\n"
+            f"CURRENT GAME:\n{game_str}\n\n"
+            f"Plan 2-4 coordinated find-and-replace edits to fix these problems. "
+            f"Each edit should target a specific part of the game that contributes to the problem."
+        )
+        messages = [{"role": "user", "content": prompt}]
+        resp = client.messages.create(
+            model=model, max_tokens=1024, temperature=0.5,
+            system=MULTI_FIX_PROMPT, messages=messages,
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"): raw = raw[:-3]
+            raw = raw.strip()
+
+        try:
+            edits = json.loads(raw)
+        except json.JSONDecodeError:
+            log(f"    Multi-edit returned invalid JSON, falling back to full rewrite")
+            edits = []
+
+        if edits:
+            result = game_str
+            applied = 0
+            for edit in edits:
+                find = edit.get("find", "")
+                replace = edit.get("replace", "")
+                if find and find in result:
+                    candidate = result.replace(find, replace, 1)
+                    ok, _ = validate_game(candidate.replace("\n", " "))
+                    if ok:
+                        result = candidate
+                        applied += 1
+            result = result.replace("\n", " ").strip()
+            if applied > 0:
+                ok, _ = validate_game(result)
+                if ok:
+                    log(f"    Applied {applied}/{len(edits)} edits")
+                    return result
+            log(f"    Multi-edit: {applied} edits applied but result invalid")
+
+    # Fallback / escalation: full rewrite with radical change instruction
+    escalation = ""
+    if attempt_num >= 3:
+        escalation = (
+            "Previous incremental fixes have NOT worked. Make a RADICAL change: "
+            "swap the win condition entirely, change the board size, add a completely "
+            "different mechanic, or restructure the game from scratch while keeping the theme. "
+        )
 
     prompt = (
-        f"This Ludax game has specific problems that need fixing:\n\n"
+        f"This Ludax game has problems:\n\n"
         f"PROBLEMS:\n{problem_text}\n\n"
         f"CURRENT GAME:\n{game_str}\n\n"
-    )
-    if rules_text:
-        prompt += f"ORIGINAL DESIGN INTENT:\n{rules_text}\n\n"
-    prompt += (
-        f"Fix the problems listed above. Keep the theme and core mechanic intact, "
-        f"but change the specific rules that cause the issues. "
-        f"Output the complete corrected game with ;; comment rules."
+        f"{escalation}"
+        f"Output the complete fixed game. Keep the theme but fix the gameplay."
     )
 
     messages = [{"role": "user", "content": prompt}]
     resp = client.messages.create(
-        model=model, max_tokens=1024, temperature=0.5,
+        model=model, max_tokens=1024, temperature=0.7 if attempt_num >= 3 else 0.5,
         system=GAME_PROMPT_SHORT, messages=messages,
     )
     output = resp.content[0].text.strip()
@@ -91,41 +154,36 @@ def fix_game(client, game_str: str, problems: list, concept: dict, model: str = 
         if output.endswith("```"): output = output[:-3]
         output = output.strip()
 
-    # Extract comments
-    import re
-    comment_lines = [l.strip().lstrip(";").strip() for l in output.split("\n") if l.strip().startswith(";;")]
-    if comment_lines:
-        concept["rules_text"] = "\n".join(comment_lines)
-
     code_lines = [l for l in output.split("\n") if not l.strip().startswith(";;")]
-    game_str = " ".join(code_lines).strip()
+    result = " ".join(code_lines).strip()
 
     # Auto-fix duplicate piece names
-    piece_defs = re.findall(r'\("(\w+)"\s+(P1|P2|both)\)', game_str)
+    piece_defs = re.findall(r'\("(\w+)"\s+(P1|P2|both)\)', result)
     seen = {}
     for name, owner in piece_defs:
         if name in seen and seen[name] != owner and seen[name] != "both":
-            game_str = re.sub(rf'\("{name}"\s+P[12]\)', f'("{name}" both)', game_str)
+            result = re.sub(rf'\("{name}"\s+P[12]\)', f'("{name}" both)', result)
         seen[name] = owner
 
-    # Validate + repair
-    for attempt in range(max_attempts):
-        ok, err = validate_game(game_str)
-        if ok:
-            return game_str
-        messages.append({"role": "assistant", "content": game_str})
-        messages.append({"role": "user", "content": f"Grammar error:\n{err}\n\nFix. Output ONLY the corrected game."})
-        resp = client.messages.create(model=model, max_tokens=1024, temperature=0.3,
-            system=GAME_PROMPT_SHORT, messages=messages)
-        output = resp.content[0].text.strip()
-        if output.startswith("```"):
-            output = output.split("\n", 1)[1] if "\n" in output else output[3:]
-            if output.endswith("```"): output = output[:-3]
-            output = output.strip()
-        code_lines = [l for l in output.split("\n") if not l.strip().startswith(";;")]
-        game_str = " ".join(code_lines).strip()
+    ok, err = validate_game(result)
+    if ok:
+        return result
 
-    return None
+    # One repair attempt
+    messages.append({"role": "assistant", "content": result})
+    messages.append({"role": "user", "content": f"Grammar error:\n{err}\n\nFix. Output ONLY the corrected game."})
+    resp = client.messages.create(model=model, max_tokens=1024, temperature=0.3,
+        system=GAME_PROMPT_SHORT, messages=messages)
+    output = resp.content[0].text.strip()
+    if output.startswith("```"):
+        output = output.split("\n", 1)[1] if "\n" in output else output[3:]
+        if output.endswith("```"): output = output[:-3]
+        output = output.strip()
+    code_lines = [l for l in output.split("\n") if not l.strip().startswith(";;")]
+    result = " ".join(code_lines).strip()
+
+    ok, _ = validate_game(result)
+    return result if ok else None
 
 
 def fitness(r):
@@ -182,8 +240,8 @@ for iteration in range(6):
         break
 
     # Fix
-    log(f"Asking LLM to fix...")
-    fixed = fix_game(client, current_game, problems, current_concept)
+    log(f"Asking LLM to fix (attempt {iteration + 1})...")
+    fixed = fix_game(client, current_game, problems, current_concept, attempt_num=iteration)
     if fixed is None:
         log(f"Fix failed (grammar). Keeping current version.")
         continue
