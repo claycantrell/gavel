@@ -7,8 +7,13 @@ import typing
 
 import anthropic
 import numpy as np
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+
+try:
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+    _HAS_TORCH = True
+except ImportError:
+    _HAS_TORCH = False
 
 from config import ArchiveGame, MutationSelectionStrategy, MutationStrategy
 from ludii_parser import extract_parentheticals
@@ -32,6 +37,78 @@ Key Ludii conventions:
 - Parentheses must balance. Every ( must have a matching ).
 
 Your task: given a partial Ludii game with a section removed (marked <BLANK>), generate a replacement expression that fits syntactically and creates an interesting game. Output ONLY the replacement expression — no explanation, no markdown, no extra text."""
+
+LUDAX_SYSTEM_PROMPT = """You are an expert board game designer working with the Ludax game description language. Ludax uses S-expressions to describe deterministic abstract strategy board games.
+
+Here are example Ludax games:
+
+Example 1 — Yavalath (placement + line game with a twist — 4-in-a-row loses, but 3-in-a-row also loses):
+(game "Yavalath"
+    (players 2)
+    (equipment (board (hexagon 9)) (pieces ("token" both)))
+    (rules
+        (play (repeat (P1 P2) (place "token" (destination (empty)))))
+        (end (if (line "token" 4) (mover win)) (if (line "token" 3) (mover lose)))
+    )
+)
+
+Example 2 — HopThrough (movement game — hop to reach opponent's side):
+(game "HopThrough"
+    (players 2 (set_forward (P1 up) (P2 down)))
+    (equipment (board (square 8)) (pieces ("token" both)))
+    (rules
+        (start (place "token" P1 ((row 6) (row 7))) (place "token" P2 ((row 0) (row 1))))
+        (play (repeat (P1 P2) (move (hop "token" direction:any))))
+        (end (if (exists (and (occupied mover) (edge forward))) (mover win)))
+    )
+)
+
+Example 3 — Reversi (placement + flip capture + scoring):
+(game "Reversi"
+    (players 2)
+    (equipment (board (square 8)) (pieces ("token" both)))
+    (rules
+        (start (place "token" P1 (28 35)) (place "token" P2 (27 36)))
+        (play (repeat (P1 P2)
+            (place "token" (destination (empty))
+                (result (exists (custodial "token" any)))
+                (effects (flip (custodial "token" any))
+                    (set_score mover (count (occupied mover)))
+                    (set_score opponent (count (occupied opponent)))))
+            (force_pass)))
+        (end (if (passed both) (by_score)))
+    )
+)
+
+Key Ludax conventions:
+- Top-level: (game "Name" (players N ...) (equipment ...) (rules ...))
+- Board types: (square N), (rectangle W H), (hexagon D), (hex_rectangle W H)
+- Pieces: (pieces ("name" P1|P2|both) ...)
+- Movement: slide, hop, step (in move blocks); place (for placement)
+- Capture: (capture (custodial ...)), implicit via hop with capture:true
+- Effects: capture, promote, flip, extra_turn, set_score, increment_score
+- End conditions: (line "piece" N), (connected "piece" ...), (no_legal_actions), (full_board), (by_score), (captured_all "piece"), (exists MASK)
+- Masks: (empty), (occupied mover|opponent), (edge forward|backward|...), (row N), (column N), (corners), (center), (and ...), (or ...), (not ...)
+- Play structure: (repeat (P1 P2) ...) or (once_through (P1 P2) ...)
+- Parentheses must balance.
+
+Your task: given a partial Ludax game with a section removed (marked <BLANK>), generate a replacement expression that fits syntactically and creates an interesting game. Output ONLY the replacement expression — no explanation, no markdown, no extra text."""
+
+LUDAX_AGENTIC_PROMPT = """You are an expert board game designer working with the Ludax game description language. You design novel, interesting games by modifying existing ones.
+
+Ludax key reference:
+- Boards: (square N), (rectangle W H), (hexagon D), (hex_rectangle W H)
+- Pieces: ("name" P1|P2|both) — defined in equipment
+- Movement types: slide (any distance), hop (jump over pieces), step (one cell), place (drop piece)
+- Directions: orthogonal, diagonal, any, forward, backward, forward_left, forward_right, up, down, left, right
+- Capture: (custodial "piece" N orientation:...), hop with capture:true
+- Effects: capture, promote "from" "to" MASK, flip MASK, extra_turn, set_score, increment_score
+- End conditions: (line "piece" N), (connected "piece" MULTI_MASK), (no_legal_actions), (full_board), (by_score), (captured_all "piece"), (exists MASK)
+- Masks: (empty), (occupied mover|opponent), (edge forward|...), (row N), (column N), (corners), (and ...), (or ...), (not ...)
+- Predicates: (exists MASK), (full_board), (no_legal_actions), (line ...), (connected ...), comparison operators
+- Play: (repeat (P1 P2) ...) or (once_through (P1 P2) ...)
+
+Parentheses must balance. All games must be deterministic (no dice/randomness)."""
 
 
 class BaseMutator(ABC):
@@ -126,20 +203,23 @@ class BaseMutator(ABC):
 class AnthropicMutator(BaseMutator):
     """Mutator that calls the Anthropic Messages API with concurrent requests."""
 
-    def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3, temperature: float = 1.0):
+    def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3,
+                 temperature: float = 1.0, use_ludax: bool = False):
         super().__init__(num_return_sequences)
         self.async_client = anthropic.AsyncAnthropic()
         self.model_name = model_name
         self.temperature = temperature
+        self.system_prompt = LUDAX_SYSTEM_PROMPT if use_ludax else LUDII_SYSTEM_PROMPT
+        self.dsl_name = "Ludax" if use_ludax else "Ludii"
 
     async def _call_api_async(self, prefix: str, suffix: str) -> str:
-        user_prompt = f"Here is a Ludii game with a section removed. Generate a replacement for <BLANK>.\n\n{prefix}<BLANK>{suffix}"
+        user_prompt = f"Here is a {self.dsl_name} game with a section removed. Generate a replacement for <BLANK>.\n\n{prefix}<BLANK>{suffix}"
 
         response = await self.async_client.messages.create(
             model=self.model_name,
             max_tokens=512,
             temperature=self.temperature,
-            system=LUDII_SYSTEM_PROMPT,
+            system=self.system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
 
@@ -199,12 +279,15 @@ class AgenticMutator(BaseMutator):
     4. Produces a refined final version
     """
 
-    def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3, temperature: float = 1.0):
+    def __init__(self, model_name: str = "claude-opus-4-6", num_return_sequences: int = 3,
+                 temperature: float = 1.0, use_ludax: bool = False):
         super().__init__(num_return_sequences)
         self.client = anthropic.Anthropic()
         self.async_client = anthropic.AsyncAnthropic()
         self.model_name = model_name
         self.temperature = temperature
+        self.system_prompt = LUDAX_AGENTIC_PROMPT if use_ludax else AGENTIC_SYSTEM_PROMPT
+        self.dsl_name = "Ludax" if use_ludax else "Ludii"
 
     async def _propose_critique_refine(self, prefix: str, original_section: str, suffix: str) -> str:
         """Single agentic mutation: propose → critique → refine."""
@@ -213,7 +296,7 @@ class AgenticMutator(BaseMutator):
         # Turn 1: Propose a mutation with rationale
         messages = [
             {"role": "user", "content": (
-                f"Here is a Ludii board game:\n\n{full_game}\n\n"
+                f"Here is a {self.dsl_name} board game:\n\n{full_game}\n\n"
                 f"I want to mutate this section: {original_section}\n\n"
                 f"Propose a creative replacement that makes the game more interesting or novel. "
                 f"Output the replacement expression, then explain your design rationale in 1-2 sentences."
@@ -222,7 +305,7 @@ class AgenticMutator(BaseMutator):
 
         response = await self.async_client.messages.create(
             model=self.model_name, max_tokens=512, temperature=self.temperature,
-            system=AGENTIC_SYSTEM_PROMPT, messages=messages,
+            system=self.system_prompt, messages=messages,
         )
         proposal = response.content[0].text.strip()
         messages.append({"role": "assistant", "content": proposal})
@@ -239,7 +322,7 @@ class AgenticMutator(BaseMutator):
 
         response = await self.async_client.messages.create(
             model=self.model_name, max_tokens=256, temperature=0.3,
-            system=AGENTIC_SYSTEM_PROMPT, messages=messages,
+            system=self.system_prompt, messages=messages,
         )
         critique = response.content[0].text.strip()
         messages.append({"role": "assistant", "content": critique})
@@ -252,7 +335,7 @@ class AgenticMutator(BaseMutator):
 
         response = await self.async_client.messages.create(
             model=self.model_name, max_tokens=512, temperature=0.5,
-            system=AGENTIC_SYSTEM_PROMPT, messages=messages,
+            system=self.system_prompt, messages=messages,
         )
 
         output = response.content[0].text.strip()
