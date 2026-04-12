@@ -6,6 +6,7 @@ import re
 import subprocess
 import time
 
+from config import MIN_BALANCE_THRESHOLD, MIN_DECISION_MOVES_THRESHOLD
 from java_helpers import *
 
 default_bytecode_path = os.path.join(pathlib.Path(__file__).parent.resolve(), 'ludii_fork/')
@@ -83,10 +84,15 @@ class JavaInterface():
             raise Exception("Java process restarted too quickly. Something is very wrong.")
 
     def _read(self):
-        return self.java_process.stdout.readline().decode("utf-8").replace("\n", "").replace("\\n", "\n")
+        line = self.java_process.stdout.readline().decode("utf-8").rstrip("\n")
+        # Unescape in a single pass so \\n (escaped backslash + n) doesn't get
+        # confused with \n (escaped newline). Each \X pair is decoded individually.
+        import re
+        return re.sub(r'\\(.)', lambda m: '\n' if m.group(1) == 'n' else m.group(1), line)
 
     def _write(self, message):
-        message = message.replace("\n", "\\n")
+        # Escape backslashes first, then newlines — order matters
+        message = message.replace("\\", "\\\\").replace("\n", "\\n")
 
         self.java_process.stdin.write(f"{message}\n".encode("utf-8"))
         self.java_process.stdin.flush()
@@ -100,6 +106,13 @@ class JavaInterface():
             self.java_process.stdin.close()
             self.java_process.terminate()
             # self.java_process.wait(timeout=0.2)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._terminate()
+        return False
 
     def __del__(self):
         self._terminate()
@@ -218,8 +231,8 @@ class StandardEvaluation(JavaInterface):
                           num_games: int = None,
                           thinking_time: float = None,
                           max_turns: int = None,
-                          min_random_balance: float = 0.5,
-                          min_random_decisions: float = 0.5):
+                          min_random_balance: float = MIN_BALANCE_THRESHOLD,
+                          min_random_decisions: float = MIN_DECISION_MOVES_THRESHOLD):
 
         # Perform a quick random evaluation to check for certain minimal criteria
         random_evaluation = self.evaluate(game_string, "Random", 100, 1, 500)
@@ -227,12 +240,14 @@ class StandardEvaluation(JavaInterface):
         if not random_evaluation["compilable"] or not random_evaluation["playable"]:
             return random_evaluation
 
-        # If the game fails to meet the minimal criteria under a random evaluation, we enforce a return that will
-        # assign the game the UNINTERESTING_FITNESS score
+        # If the game fails to meet the minimal criteria under a random evaluation, we return
+        # metrics that will reliably trigger the UNINTERESTING_FITNESS path in _evaluate_fitness
+        # (completion=0 is below COMPLETION_THRESHOLD, guaranteeing UNINTERESTING_FITNESS = -1)
         if random_evaluation["balance"] < min_random_balance or random_evaluation["decision_moves"] < min_random_decisions:
-            evaluation = {"compilable": True, "playable": True, "trace_score": 0, "balance": 0, "completion": 0, "drawishness": 0,
-                          "mean_turns": 0, "decision_moves": 0, "board_coverage_default": 0, "wins": [], "error": "Uninteresting under random eval"}
-            
+            evaluation = {"compilable": True, "playable": True, "trace_score": -1, "balance": -1, "completion": 0,
+                          "drawishness": -1, "mean_turns": 0, "decision_moves": 0, "board_coverage_default": 0,
+                          "wins": [], "error": "Uninteresting under random eval"}
+
             return evaluation
 
 

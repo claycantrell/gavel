@@ -19,11 +19,14 @@ import scipy.stats as stats
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, set_seed
 
-from archives import MAPElitesArchive, SelectedConceptArchive, ConceptPCAArchive, ConceptsAndLengthArchive
+from archives import MAPElitesArchive, SelectedConceptArchive, ConceptPCAArchive, ConceptsAndLengthArchive, StructuralPCAArchive
 from config import ArchiveGame, MutationSelectionStrategy, EliteSelectionStrategy, MutationStrategy, FitnessEvaluationStrategy, VALIDATION_GAMES
 from fitness_helpers import _get_fast_evaluation, _close_fast_evaluation, _evaluate_fitness, _compute_balance, _compute_drawishness, FITNESS_METRIC_KEYS, UNCOMPILABLE_FITNESS
 from java_helpers import SYNTACTIC_BEHAVIORAL_CHARACTERISTICS, SEMANTIC_BEHAVIORAL_CHARACTERISTICS
-from mutators import LLMMutator
+from llm_fitness import LLMFitnessEvaluator
+from ludax_fitness import evaluate_game as ludax_evaluate_game, close_evaluation as ludax_close
+from ludax_grammar import validate_game as ludax_validate
+from mutators import LLMMutator, AnthropicMutator, AgenticMutator, MultiEditMutator
 from utils import gpu_utilization, spin_gpu
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -31,9 +34,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 ORGANIZATION = "LudiiLMs/"
 class MAPElitesSearch():
     def __init__(self,
-                 model: AutoModelForCausalLM,
-                 tokenizer: AutoTokenizer,
-                 config: GenerationConfig,
+                 mutator,
                  archive: MAPElitesArchive,
                  num_selections: int,
                  elite_selection_strategy: EliteSelectionStrategy,
@@ -49,15 +50,15 @@ class MAPElitesSearch():
                  num_threads: int = 16,
                  save_dir: str = "./exp_outputs/map-elites-test",
                  verbose: bool = False):
-        
+
         self.num_threads = num_threads
         self.save_dir = save_dir
         self.verbose = verbose
         self.spin_gpu = spin_gpu
 
         # Initialize mutator
-        if self.verbose: print("Initializing LLM mutator...")
-        self.mutator = LLMMutator(model, tokenizer, config)
+        if self.verbose: print("Initializing mutator...")
+        self.mutator = mutator
         self.mutation_selection_strategy = mutation_selection_strategy
         self.mutation_strategy = mutation_strategy
 
@@ -81,12 +82,22 @@ class MAPElitesSearch():
             self.evaluation_fn = partial(self._combined_eval, thinking_time=thinking_time, num_games=games_per_eval,
                                          max_turns=max_turns, timeout_duration=self.fitness_eval_timeout)
 
+        elif fitness_evaluation_strategy == FitnessEvaluationStrategy.LLM_JUDGE:
+            self.llm_judge = LLMFitnessEvaluator()
+            self.evaluation_fn = self._llm_eval
+
+        elif fitness_evaluation_strategy == FitnessEvaluationStrategy.ADAPTIVE:
+            self.llm_judge = LLMFitnessEvaluator()
+            self.evaluation_fn = partial(self._adaptive_eval, thinking_time=thinking_time,
+                                         num_games=games_per_eval, max_turns=max_turns,
+                                         timeout_duration=self.fitness_eval_timeout)
+
+        elif fitness_evaluation_strategy == FitnessEvaluationStrategy.LUDAX:
+            self.evaluation_fn = partial(self._ludax_eval, num_games=games_per_eval)
+
         self.archive = archive
         self.num_selections = num_selections
         self.elite_selection_strategy = elite_selection_strategy
-
-        # Store a record of every evaluated game (in case duplicates are produced)
-        self.evaluation_cache = {}
 
         self.epoch = 0
         self.run_stats = []
@@ -105,6 +116,57 @@ class MAPElitesSearch():
 
         return game_str
     
+    @staticmethod
+    def _ludax_eval(game_str: str, num_games: int = 50):
+        '''
+        Evaluate game using Ludax JAX-accelerated environment.
+        Validates grammar first, then runs random playouts.
+        '''
+        # Fast grammar check before expensive compilation
+        is_valid, err = ludax_validate(game_str)
+        if not is_valid:
+            from config import UNCOMPILABLE_FITNESS
+            return {"compilable": False, "playable": False, "balance": -1, "completion": -1,
+                    "drawishness": -1, "mean_turns": -1, "decision_moves": -1,
+                    "board_coverage_default": -1, "trace_score": -1, "wins": [],
+                    "game_str": game_str, "error": f"Grammar: {err[:200]}"}
+
+        return ludax_evaluate_game(game_str, num_random_games=num_games)
+
+    def _llm_eval(self, game_str: str):
+        '''
+        Evaluate game quality using an LLM judge (no Java/simulation needed)
+        '''
+        return self.llm_judge.evaluate(game_str)
+
+    def _adaptive_eval(self, game_str: str, thinking_time: int, num_games: int,
+                       max_turns: int, timeout_duration: int, llm_threshold: float = 0.4):
+        '''
+        Adaptive evaluation: LLM pre-filter → simulation only for promising games.
+        Saves expensive Java/MCTS compute by rejecting clearly bad games early.
+        '''
+        # Stage 1: fast LLM pre-filter
+        llm_eval = self.llm_judge.evaluate(game_str)
+
+        if llm_eval["llm_fitness"] < llm_threshold:
+            # LLM says it's not worth simulating
+            return llm_eval
+
+        # Stage 2: full simulation for games that pass the LLM filter
+        sim_eval = _get_fast_evaluation(game_str, ai_name="UCT", thinking_time=thinking_time,
+                                        num_games=num_games, max_turns=max_turns,
+                                        timeout_duration=timeout_duration)
+
+        # Merge: keep simulation metrics but add LLM scores as additional signal
+        sim_eval["llm_coherence"] = llm_eval["llm_coherence"]
+        sim_eval["llm_interestingness"] = llm_eval["llm_interestingness"]
+        sim_eval["llm_balance"] = llm_eval["llm_balance"]
+        sim_eval["llm_novelty"] = llm_eval["llm_novelty"]
+        sim_eval["llm_completeness"] = llm_eval["llm_completeness"]
+        sim_eval["llm_rationale"] = llm_eval["llm_rationale"]
+
+        return sim_eval
+
     @staticmethod
     def _random_eval(game_str: str, timeout_duration: int):
         '''
@@ -194,11 +256,12 @@ class MAPElitesSearch():
             for key in FITNESS_METRIC_KEYS:
                 average_evaluation[key] = np.mean([evaluation[key] for evaluation in eval_group])
 
-            # For balance and drawishness, in particular, we manually compute the average from the raw
-            # win counts because the micro-average of balance and drawishness is not meaningful
+            # For balance and drawishness, recompute from raw win counts when available
+            # (LLM evaluations have no wins data, so keep the metric values as-is)
             collected_wins = sum([evaluation["wins"] for evaluation in eval_group], [])
-            average_evaluation["balance"] = _compute_balance(collected_wins)
-            average_evaluation["drawishness"] = _compute_drawishness(collected_wins)
+            if collected_wins:
+                average_evaluation["balance"] = _compute_balance(collected_wins)
+                average_evaluation["drawishness"] = _compute_drawishness(collected_wins)
 
             fitness_score = _evaluate_fitness(average_evaluation, self.fitness_aggregator)
 
@@ -360,6 +423,11 @@ class MAPElitesSearch():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str, default="LudiiLMs/code-llama-13b-fitm-mask", help="Name of the model to load")
+    parser.add_argument('--use_anthropic', action='store_true', help="Use Anthropic API instead of local HuggingFace model")
+    parser.add_argument('--use_agentic', action='store_true', help="Use agentic propose-critique-refine mutation loop (implies --use_anthropic)")
+    parser.add_argument('--use_multi_edit', action='store_true', help="Use guided multi-edit mutations (coordinated full-game rewrites with design directions)")
+    parser.add_argument('--anthropic_model', type=str, default="claude-opus-4-6", help="Anthropic model to use (e.g. claude-opus-4-6, claude-sonnet-4-6)")
+    parser.add_argument('--use_ludax', action='store_true', help="Use Ludax (.ldx) instead of Ludii (.lud) — enables grammar validation, JAX evaluation, and Ludax-aware prompts")
     parser.add_argument('--verbose', action='store_true', help="Whether to print verbose output")
     parser.add_argument('--spin_gpu', action='store_true', help="Whether to spin the GPU during evaluation")
 
@@ -370,7 +438,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_selections', type=int, default=5, help="Number of games to select from the archive per epoch")
 
     # Archive arguments
-    parser.add_argument('--archive_type', default="selected_concept", choices=["selected_concept", "pca", "pca_and_length"], help="Type of archive to use")
+    parser.add_argument('--archive_type', default="selected_concept", choices=["selected_concept", "pca", "pca_and_length", "structural"], help="Type of archive to use")
     parser.add_argument('--elite_selection_strategy', type=str, default="random", choices=["random", "ucb"], help="Strategy for selecting elites from the archive")
     parser.add_argument('--entries_per_cell', type=int, default=1, help="Number of games to store in each archive cell")
     parser.add_argument('--bc_type', type=str, default="semantic", choices=["syntactic", "semantic", "combined"], help="Type of behavioral characteristic to use for selected-concept archive")
@@ -382,7 +450,7 @@ if __name__ == '__main__':
     
     # Fitness arguments
     parser.add_argument('--fitness_aggregator', type=str, default="hmean", choices=["avg", "hmean", "min"], help="Aggregation function to use when combining evaluation metrics into a fitness score")
-    parser.add_argument('--fitness_evaluation_strategy', type=str, default="random", choices=["random", "uct", "one_ply", "combined"], help="Strategy for evaluating fitnesses")
+    parser.add_argument('--fitness_evaluation_strategy', type=str, default="random", choices=["random", "uct", "one_ply", "combined", "llm_judge", "adaptive", "ludax"], help="Strategy for evaluating fitnesses")
     parser.add_argument('--games_per_eval', type=int, default=5, help="Number of games to simulate for each evaluation")
     parser.add_argument('--thinking_time', type=float, default=0.1, help="Thinking time to use per move when evaluating fitnesses with search agents")
     parser.add_argument('--max_turns', type=int, default=250, help="Maximum number of turns to allow for each game during evaluation")
@@ -395,7 +463,7 @@ if __name__ == '__main__':
     parser.add_argument('--mutation_temperature', type=float, default=1.0, help="Temperature to use when performing mutations")
     parser.add_argument('--mutation_beam_size', type=int, default=1, help="Beam size to use when performing mutations")
     parser.add_argument('--mutation_diversity_penalty', type=float, default=0.0, help="Diversity penalty to use when performing mutations across multiple beams")
-    parser.add_argument('--mutation_selection_strategy', type=str, default="random", choices=["random", "ucb_depth", "ucb_ludeme"], help="Strategy for selecting where to perform a mutation in a game")
+    parser.add_argument('--mutation_selection_strategy', type=str, default="random", choices=["random", "ucb_depth", "ucb_ludeme", "semantic"], help="Strategy for selecting where to perform a mutation in a game")
     parser.add_argument('--mutation_strategy', type=str, default="standard", choices=["standard", "grammar_enforced"], help="Strategy for performing a mutation in a game")
 
     # Save arguments
@@ -433,20 +501,47 @@ if __name__ == '__main__':
     # Set the random seed
     set_seed(args.seed)
 
-    # Load the model and tokenizer
-    model = AutoModelForCausalLM.from_pretrained(args.model_name)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    # Create the mutator (Agentic / Anthropic API / local HuggingFace)
+    use_ludax = args.use_ludax
+    if use_ludax:
+        print("Ludax mode: using .ldx grammar, Ludax-aware prompts")
 
-    config = GenerationConfig(
-        temperature=args.mutation_temperature,
-        num_beams=args.mutation_beam_size,
-        num_beam_groups=args.mutation_beam_size,
-        diversity_penalty=args.mutation_diversity_penalty,
-
-        do_sample=True,
-        num_return_sequences=args.num_mutations,
-        renormalize_logits=True,
-    )
+    if args.use_multi_edit:
+        print(f"Using guided multi-edit mutations with model: {args.anthropic_model}")
+        mutator = MultiEditMutator(
+            model_name=args.anthropic_model,
+            num_return_sequences=args.num_mutations,
+            temperature=args.mutation_temperature,
+        )
+    elif args.use_agentic:
+        print(f"Using agentic propose-critique-refine loop with model: {args.anthropic_model}")
+        mutator = AgenticMutator(
+            model_name=args.anthropic_model,
+            num_return_sequences=args.num_mutations,
+            temperature=args.mutation_temperature,
+            use_ludax=use_ludax,
+        )
+    elif args.use_anthropic:
+        print(f"Using Anthropic API with model: {args.anthropic_model}")
+        mutator = AnthropicMutator(
+            model_name=args.anthropic_model,
+            num_return_sequences=args.num_mutations,
+            temperature=args.mutation_temperature,
+            use_ludax=use_ludax,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(args.model_name)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+        config = GenerationConfig(
+            temperature=args.mutation_temperature,
+            num_beams=args.mutation_beam_size,
+            num_beam_groups=args.mutation_beam_size,
+            diversity_penalty=args.mutation_diversity_penalty,
+            do_sample=True,
+            num_return_sequences=args.num_mutations,
+            renormalize_logits=True,
+        )
+        mutator = LLMMutator(model, tokenizer, config)
 
     # Create the archive
     if args.archive_type == "selected_concept":
@@ -481,6 +576,13 @@ if __name__ == '__main__':
             seed=args.seed
         )
 
+    elif args.archive_type == "structural":
+        archive = StructuralPCAArchive(
+            pca_dims=args.pca_dims,
+            cells_per_dim=args.cells_per_dim,
+            entries_per_cell=args.entries_per_cell,
+            seed=args.seed
+        )
 
     # Set the fitness aggregator
     if args.fitness_aggregator == "avg":
@@ -493,9 +595,7 @@ if __name__ == '__main__':
         raise ValueError(f"Fitness aggregator {args.fitness_aggregator} not recognized")
 
     map_elites = MAPElitesSearch(
-        model=model,
-        tokenizer=tokenizer,
-        config=config,
+        mutator=mutator,
         archive=archive,
         num_selections=args.num_selections,
         elite_selection_strategy=args.elite_selection_strategy, 
@@ -513,8 +613,24 @@ if __name__ == '__main__':
         verbose=args.verbose
     )
 
-    # Load the dataset in order to determine the games that initially seed the archive, unless the held-out set is being used
-    if args.seed_with_heldout_set:
+    # Load the dataset in order to determine the games that initially seed the archive
+    if use_ludax:
+        # Seed with bundled Ludax .ldx games
+        import ludax as _ludax_pkg
+        ludax_games_dir = os.path.join(os.path.dirname(_ludax_pkg.__file__), "games")
+        ldx_files = glob.glob(os.path.join(ludax_games_dir, "*.ldx"))
+        initial_game_strs = []
+        initial_game_names = []
+        for f in sorted(ldx_files):
+            name = os.path.splitext(os.path.basename(f))[0]
+            if name == "test" or name == "gridworld":
+                continue  # skip non-game files
+            with open(f) as fh:
+                initial_game_strs.append(fh.read())
+            initial_game_names.append(name)
+        print(f"Seeding archive with {len(initial_game_strs)} Ludax games")
+
+    elif args.seed_with_heldout_set:
         initial_game_names = VALIDATION_GAMES
         initial_game_strs = []
         for name in initial_game_names:
@@ -533,8 +649,9 @@ if __name__ == '__main__':
 
         initial_game_strs = []
         initial_game_names = []
+        dataset_name = args.model_name + "-base-data" if not args.use_anthropic else "LudiiLMs/code-llama-13b-fitm-mask-heldout-1-epoch-base-data"
         for split in splits:
-            dataset = load_dataset(args.model_name + "-base-data", split=split)
+            dataset = load_dataset(dataset_name, split=split)
             initial_game_strs += dataset['base_game']
             initial_game_names += dataset['name']
 

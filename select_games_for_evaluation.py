@@ -13,7 +13,8 @@ from datasets import load_dataset
 import numpy as np
 import pandas as pd
 from scipy import stats
-from thefuzz import fuzz
+from rapidfuzz import fuzz as rfuzz
+from rapidfuzz.process import cdist as rfuzz_cdist
 from tqdm import tqdm
 
 from evolution import ArchiveGame, SelectedConceptArchive, ConceptPCAArchive
@@ -147,8 +148,12 @@ for ancestor in sorted(games_by_ancestor, key=lambda x: len(games_by_ancestor[x]
     # novelty_scores = [novelty.evaluate(game.game_str) for game in games]
     cell_deltas = [np.array(dummy_archive._get_cell(game)) - np.array(original_game_cell) for game in games]
     cell_distances = [np.linalg.norm(delta, ord=1) for delta in cell_deltas]
-    edit_distances = [1 - (fuzz.ratio(game.game_str, original_game) / 100) for game in games]
-    global_edit_distances = [np.min([1 - (fuzz.ratio(game.game_str, comp_game) / 100) for comp_game in name_to_game.values()]) for game in games]
+    edit_distances = [1 - (rfuzz.ratio(game.game_str, original_game) / 100) for game in games]
+    # Vectorized: compute similarity of each evolved game against all base games at once
+    game_strs = [game.game_str for game in games]
+    base_game_strs = list(name_to_game.values())
+    similarity_matrix = rfuzz_cdist(game_strs, base_game_strs, scorer=rfuzz.ratio)
+    global_edit_distances = (1 - similarity_matrix.max(axis=1) / 100).tolist()
     lineage_lengths = [len(game.lineage) for game in games]
     length_ratios = [min((len(game.game_str) / len(original_game)), (len(original_game) / len(game.game_str))) for game in games]
 
