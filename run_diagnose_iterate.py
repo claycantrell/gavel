@@ -67,6 +67,11 @@ def diagnose(r: dict) -> list:
     if mf < 0.05 and r.get("score_volatility", 0) > 0:
         problems.append("DEAD_MECHANIC: The game defines capture/flip effects but they fire on less than 5% of turns. Lower the custodial distance to 1, or change the effect trigger to be more common.")
 
+    mf = r.get("mechanic_frequency", 0)
+    ov = r.get("outcome_variance", 10)
+    if mf > 0.9 and ov < 8:
+        problems.append("NOISY_MECHANIC: Effects fire on over 90% of turns but outcome variance is still low. The effects probably don't depend on move choice — they fire unconditionally. Every effect should depend on WHERE you place or move.")
+
     if not problems:
         problems.append("MINOR_TUNING: No major issues found. Try adjusting the board size, win threshold, or adding a secondary win condition for more variety.")
 

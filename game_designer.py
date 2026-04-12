@@ -159,6 +159,7 @@ forward_left | forward_right | up | down | left | right
 - (row N) fails on hexagon boards — use explicit indices
 - (custodial N) with N > 1 almost never triggers
 - Ludax has NO dice, NO cards, NO hidden info, NO random events
+- Every effect should depend on WHERE you placed or moved. If an effect fires the same way regardless of your move choice, it adds noise not strategy.
 
 First write a brief comment block describing the rules in plain English, then the game code.
 Format:
