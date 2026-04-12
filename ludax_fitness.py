@@ -14,6 +14,9 @@ import numpy as np
 from config import UNCOMPILABLE_FITNESS, UNPLAYABLE_FITNESS, UNINTERESTING_FITNESS
 
 
+MAX_GAME_STEPS = 300  # pad/truncate all games to this length for scan
+
+
 def _random_playout(env, rng) -> typing.Tuple:
     """Play a single game with random moves. Returns (rewards, num_turns, terminated)."""
     state = env.init(rng)
@@ -32,6 +35,58 @@ def _random_playout(env, rng) -> typing.Tuple:
 
     (final_state, _, num_turns) = jax.lax.while_loop(cond, body, (state, rng, 0))
     return final_state.rewards, num_turns, final_state.terminated
+
+
+def _tracked_playout(env, rng) -> typing.Tuple:
+    """
+    Play a game tracking per-step data via jax.lax.scan.
+    Returns (rewards, num_turns, terminated, per_step_scores, per_step_pieces).
+
+    per_step_scores[t] = [p1_score, p2_score] at step t (or piece counts if no scoring)
+    per_step_pieces[t] = [p1_pieces, p2_pieces] at step t
+    """
+    state = env.init(rng)
+    has_scores = hasattr(state.game_state, "scores")
+
+    def scan_body(carry, _):
+        state, rng, done = carry
+        rng, key = jax.random.split(rng)
+        logits = jnp.where(state.legal_action_mask, 0.0, -1e9)
+        action = jax.random.categorical(key, logits)
+
+        # Only step if game isn't over
+        new_state = env.step(state, action)
+        still_playing = ~done
+        state = jax.tree.map(
+            lambda new, old: jnp.where(still_playing, new, old),
+            new_state, state)
+        done = done | state.terminated | state.truncated
+
+        # Track scores (or piece counts as proxy)
+        if has_scores:
+            scores = state.game_state.scores.astype(jnp.float32)
+        else:
+            # Count pieces per player from the board
+            board = state.game_state.board  # (num_piece_types, board_size)
+            p1_count = board[0].sum().astype(jnp.float32)
+            p2_count = board[1].sum().astype(jnp.float32) if board.shape[0] > 1 else jnp.float32(0)
+            scores = jnp.array([p1_count, p2_count])
+
+        # Track number of legal moves
+        n_legal = state.legal_action_mask.sum().astype(jnp.float32)
+
+        step_data = jnp.concatenate([scores, jnp.array([n_legal, done.astype(jnp.float32)])])
+        return (state, rng, done), step_data
+
+    init_done = jnp.bool_(False)
+    (final_state, _, _), step_data = jax.lax.scan(
+        scan_body, (state, rng, init_done), None, length=MAX_GAME_STEPS)
+
+    # step_data shape: (MAX_GAME_STEPS, 4) = [p1_score, p2_score, n_legal, done]
+    num_turns = jnp.argmax(step_data[:, 3]).astype(jnp.int32)  # first step where done=True
+    num_turns = jnp.where(step_data[:, 3].any(), num_turns + 1, MAX_GAME_STEPS)
+
+    return final_state.rewards, num_turns, final_state.terminated, step_data
 
 
 def compile_and_check(game_str: str) -> typing.Tuple[typing.Any, str]:
@@ -160,6 +215,55 @@ def evaluate_game(game_str: str,
         evaluation["board_coverage_default"] = min(1.0, evaluation["mean_turns"] / env.board_size)
     else:
         evaluation["board_coverage_default"] = 0
+
+    # --- Engagement metrics (tracked playouts) ---
+    try:
+        tracked_fn = jax.jit(jax.vmap(lambda rng: _tracked_playout(env, rng)))
+        tracked_rng = jax.random.PRNGKey(seed + 99)
+        tracked_keys = jax.random.split(tracked_rng, min(num_random_games, 20))
+        _, t_turns, t_terminated, t_step_data = tracked_fn(tracked_keys)
+
+        t_turns = np.array(t_turns)
+        t_step_data = np.array(t_step_data)  # (N, MAX_STEPS, 4)
+        t_terminated = np.array(t_terminated)
+
+        # Only analyze completed games
+        mask = t_terminated
+        if mask.sum() > 0:
+            # Lead changes: count sign flips of (p1_score - p2_score)
+            score_diffs = t_step_data[mask, :, 0] - t_step_data[mask, :, 1]  # (N_completed, MAX_STEPS)
+            lead_signs = np.sign(score_diffs)
+            # Shift and compare to find sign changes (ignoring 0s)
+            sign_changes = np.abs(np.diff(lead_signs, axis=1))
+            # A change from +1 to -1 is 2, from +1 to 0 or 0 to -1 is 1
+            lead_changes_per_game = (sign_changes > 0).sum(axis=1)
+            evaluation["lead_changes"] = float(lead_changes_per_game.mean())
+
+            # Score trajectory variance (how bumpy is each game?)
+            score_abs_diffs = np.abs(np.diff(score_diffs, axis=1))
+            evaluation["score_volatility"] = float(score_abs_diffs.mean())
+
+            # Decision diversity: average number of legal moves per turn
+            n_legal = t_step_data[mask, :, 2]  # (N_completed, MAX_STEPS)
+            # Only count steps before game ended
+            step_active = t_step_data[mask, :, 3] == 0  # steps before done
+            if step_active.sum() > 0:
+                evaluation["avg_legal_moves"] = float(n_legal[step_active].mean())
+            else:
+                evaluation["avg_legal_moves"] = 0
+
+            # Game length variance (replayability)
+            evaluation["turns_std"] = float(t_turns[mask].std())
+        else:
+            evaluation["lead_changes"] = 0
+            evaluation["score_volatility"] = 0
+            evaluation["avg_legal_moves"] = 0
+            evaluation["turns_std"] = 0
+    except Exception as e:
+        evaluation["lead_changes"] = 0
+        evaluation["score_volatility"] = 0
+        evaluation["avg_legal_moves"] = 0
+        evaluation["turns_std"] = 0
 
     # Skill trace: measure MCTS vs random win rate for promising games
     # Only compute for games that pass basic quality checks (saves ~8s per bad game)
