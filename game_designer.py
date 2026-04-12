@@ -46,32 +46,9 @@ Output a JSON object with these fields:
 - "win_condition": what ends the game — choose something that fits the theme
 - "twist": one unique rule that makes this game different from all others — something surprising that emerges from the theme
 
-The theme MUST be from the specific category provided in the user message. Do NOT deviate. The theme should MOTIVATE the mechanics.
+Your theme MUST be inspired by the random seed words provided in the user message. Interpret them creatively — they are evocative sparks, not literal requirements. The theme should MOTIVATE the mechanics.
 
 Output ONLY the JSON. No markdown fences."""
-
-THEME_CATEGORIES = [
-    "espionage during the Cold War",
-    "ancient Egyptian tomb builders",
-    "rival astronomers mapping constellations",
-    "medieval alchemists transmuting elements",
-    "underground mycelium networks in a forest",
-    "competing architects building a cathedral",
-    "samurai clans in feudal Japan",
-    "telegraph operators during a civil war",
-    "rival archaeologists excavating a lost city",
-    "jazz musicians battling for a Harlem stage",
-    "polar explorers racing to a magnetic pole",
-    "merchant caravans on the Silk Road",
-    "dueling clockmakers in Renaissance Prague",
-    "shamans guiding spirits through the afterlife",
-    "rebel cells in a dystopian surveillance state",
-    "deep-sea divers salvaging a shipwreck",
-    "nomadic shepherds competing for grazing land",
-    "orbital engineers building a space station",
-    "competing scribes in the Library of Alexandria",
-    "volcanic island settlers before an eruption",
-]
 
 
 GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept, output a complete, valid Ludax game.
@@ -120,16 +97,26 @@ GAME_PROMPT = """You are an expert Ludax game designer. Given a game concept, ou
 Output ONLY the (game ...) expression. No explanation."""
 
 
+def _random_seed_words() -> str:
+    """Generate evocative random word pairs as theme seeds."""
+    from wonderwords import RandomWord
+    r = RandomWord()
+    adj = r.word(include_categories=["adjective"])
+    noun1 = r.word(include_categories=["noun"])
+    noun2 = r.word(include_categories=["noun"])
+    return f"{adj} {noun1}, {noun2}"
+
+
 def generate_theme(client: anthropic.Anthropic, model: str = "claude-sonnet-4-6",
-                   category: typing.Optional[str] = None) -> dict:
-    """Generate a random game theme/concept, optionally from a specific category."""
-    if category is None:
-        category = random.choice(THEME_CATEGORIES)
+                   seed_words: typing.Optional[str] = None) -> dict:
+    """Generate a random game theme/concept from random seed words."""
+    if seed_words is None:
+        seed_words = _random_seed_words()
     resp = client.messages.create(
         model=model, max_tokens=512, temperature=1.0,
         system=THEME_PROMPT,
         messages=[{"role": "user", "content":
-            f"Invent a new board game concept. The theme MUST be: {category}"}],
+            f"Invent a new board game concept. Your creative seed words are: {seed_words}"}],
     )
     raw = resp.content[0].text.strip()
     if raw.startswith("```"):
@@ -137,7 +124,7 @@ def generate_theme(client: anthropic.Anthropic, model: str = "claude-sonnet-4-6"
         if raw.endswith("```"): raw = raw[:-3]
         raw = raw.strip()
     result = json.loads(raw)
-    result["category"] = category
+    result["seed_words"] = seed_words
     return result
 
 
@@ -199,22 +186,17 @@ def design_games(num_games: int = 10, model: str = "claude-sonnet-4-6"):
     log(f"=== NOVEL GAME DESIGNER ===")
     log(f"Generating {num_games} games with {model}\n")
 
-    # Shuffle categories so each game gets a unique theme
-    categories = THEME_CATEGORIES.copy()
-    random.shuffle(categories)
-
     for i in range(num_games):
         t0 = time.time()
-        category = categories[i % len(categories)]
 
-        # Step 1: Theme
+        # Step 1: Theme from random seed words
         try:
-            concept = generate_theme(client, model, category=category)
+            concept = generate_theme(client, model)
         except Exception as e:
             log(f"Game {i+1}: THEME ERROR — {e}")
             continue
 
-        log(f"Game {i+1}: \"{concept.get('name', '?')}\"")
+        log(f"Game {i+1}: \"{concept.get('name', '?')}\" (seeds: {concept.get('seed_words', '?')})")
         log(f"  Theme: {concept.get('theme', '?')[:80]}")
         log(f"  Board: {concept.get('board', '?')} | Mechanic: {concept.get('mechanic', '?')}")
         log(f"  Win: {concept.get('win_condition', '?')[:60]}")
