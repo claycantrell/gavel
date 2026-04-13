@@ -40,17 +40,35 @@ Breakthrough:
 Yavalath:
 (game "Yavalath" (players 2) (equipment {(board (rotate 90 (hex 5))) (piece "Marker" Each)}) (rules (play (move Add (to (sites Empty)))) (end {(if (is Line 4) (result Mover Win)) (if (is Line 3) (result Mover Loss))})))
 
+Here are 5 MORE diverse examples showing different game types:
+
+Hex (connection game):
+(game "Hex" (players 2) (equipment {(board (hex Diamond 11)) (piece "Marker" Each) (regions P1 {(sites Side NE) (sites Side SW)}) (regions P2 {(sites Side NW) (sites Side SE)})}) (rules (play (move Add (to (sites Empty)))) (end (if (is Connected Mover) (result Mover Win)))))
+
+Hasami Shogi (slide + custodial capture):
+(game "Hasami Shogi" (players 2) (equipment {(board (square 9)) (piece "Fuhyo" P1 (move Slide Orthogonal (then (custodial (from (last To)) Orthogonal (between (max 1) if:(is Enemy (who at:(between))) (apply (remove (between)))) (to if:(is Friend (who at:(to)))))))) (piece "Tokin" P2 (move Slide Orthogonal (then (custodial (from (last To)) Orthogonal (between (max 1) if:(is Enemy (who at:(between))) (apply (remove (between)))) (to if:(is Friend (who at:(to))))))))}) (rules (start {(place "Fuhyo1" (sites Bottom)) (place "Tokin2" (sites Top))}) (play (forEach Piece)) (end (if (= (count Pieces Next) 1) (result Mover Win)))))
+
+Konane (hop chain capture):
+(game "Konane" (players 2) (equipment {(board (square 8)) (piece "Marker" Each)}) (rules (start {(place "Marker1" (sites Phase 1)) (place "Marker2" (sites Phase 0))}) (play (forEach Piece "Marker" (move Hop Orthogonal (between if:(is Enemy (who at:(between))) (apply (remove (between)))) (to if:(is Empty (to))) (then (if (can Move (move Hop (from (last To)) Orthogonal (between if:(is Enemy (who at:(between))) (apply (remove (between)))) (to if:(is Empty (to))))) (moveAgain)))))) (end (if (no Moves Next) (result Next Loss)))))
+
 Key Ludii patterns:
 - (piece "Name" Each (move Step/Slide/Hop ...)) — pieces define their own movement
 - (play (forEach Piece)) — each piece moves according to its definition
 - (move Add (to (sites Empty))) — placement on empty cells
 - (move Step Forward/Orthogonal/Diagonal ...) — one-cell movement
-- (move Hop (between if:...) (to if:...)) — jump capture
+- (move Slide Orthogonal/Diagonal ...) — slide any distance
+- (move Hop ... (between if:...) (to if:...)) — jump capture
+- (then ...) — effects after a move (custodial capture, moveAgain, etc.)
 - (end (if (is Line N) (result Mover Win))) — N in a row wins
+- (end (if (is Connected Mover) (result Mover Win))) — connect opposite edges
 - (end (if (no Moves Next) (result Next Loss))) — no moves = loss
+- (end (if (= (count Pieces Next) N) (result Mover Win))) — reduce to N pieces
 - (start {(place "Piece1" (expand (sites Bottom)))}) — starting positions
-- Boards: (square N), (hex N), (rectangle H W)
+- (start {(place "Piece1" (sites Phase 0))}) — checkerboard placement
+- Boards: (square N), (hex N), (hex Diamond N), (rectangle H W)
 - NO dice, NO cards, NO hidden information — deterministic games only
+
+Design a NOVEL game that is NOT a copy of any example above. Combine mechanics in new ways.
 
 Output ONLY the (game ...) expression. No explanation."""
 
